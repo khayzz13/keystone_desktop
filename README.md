@@ -204,7 +204,7 @@ python3 build.py --run
 **Requirements:** macOS 15+ (Apple Silicon), .NET 10 SDK, Bun, Rust toolchain
 
 ```bash
-git clone https://github.com/khayzz13/keystone-desktop.git
+git clone https://github.com/khayzz13/keystone_desktop.git
 cd keystone-desktop
 python3 build.py
 ```
