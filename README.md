@@ -6,6 +6,7 @@ A native desktop application framework. Three processes — a C# host, a Bun run
 
 Build your frontend in web tech (React, Svelte, vanilla JS), your backend services in TypeScript, and your main process in C# with direct access to Metal, AppKit, and the full macOS platform. Or skip any layer you don't need.
 
+https://discord.gg/d2GVrZJda7 - OFFICIAL DISCORD
 ---
 
 ## The architecture
