@@ -1,0 +1,21 @@
+{
+  "name": "{{APP_NAME}}",
+  "id": "{{APP_ID}}",
+  "version": "0.1.0",
+
+  "windows": [
+    {
+      "component": "app",
+      "title": "{{APP_NAME}}",
+      "width": 1024,
+      "height": 700,
+      "spawn": true
+    }
+  ],
+
+  "bun": { "root": "bun" },
+
+  "build": {
+    "category": "public.app-category.utilities"
+  }
+}

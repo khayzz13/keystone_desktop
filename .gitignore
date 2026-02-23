@@ -1,0 +1,43 @@
+# .NET build outputs
+bin/
+obj/
+artifacts/
+*.nupkg
+*.csproj.nuget.*
+*.pdb
+
+# Compiled native plugins (built by developer, not committed)
+dylib/*.dll
+dylib/native/
+
+# Rust build output
+rust_ffi/target/
+
+# Bun
+**/node_modules/
+bun/Keystone (Server)
+
+# Packaged app bundles and DMGs
+dist/
+examples/*/dist/
+
+# Internal docs
+OVERVIEW.md
+CLAUDE.md
+docs/initial plan docs/
+examples/my-app
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates

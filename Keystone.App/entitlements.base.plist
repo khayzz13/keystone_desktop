@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for Developer ID distribution.
+  Required for notarization.
+
+  com.apple.security.cs.allow-jit
+    Required for WKWebView/JavaScriptCore JIT compilation.
+
+  com.apple.security.cs.allow-unsigned-executable-memory
+    Required for the .NET CLR to JIT-compile managed code. The runtime
+    is always JIT-based (not AOT), so this is needed unconditionally.
+
+  The packager patches in disable-library-validation when
+  allowExternalSignatures is enabled (third-party plugin DLLs).
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

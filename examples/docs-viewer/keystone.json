@@ -1,0 +1,16 @@
+{
+  "name": "Keystone Docs",
+  "id": "com.keystone.docs",
+  "version": "0.1.0",
+
+  "windows": [
+    {
+      "component": "docs",
+      "title": "Keystone Documentation",
+      "width": 1100,
+      "height": 720
+    }
+  ],
+
+  "bun": { "root": "bun" }
+}

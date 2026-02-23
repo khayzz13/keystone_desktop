@@ -1,0 +1,12 @@
+{
+  "name": "{{APP_SLUG}}-bun",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "keystone-desktop": "{{KEYSTONE_VERSION}}"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "typescript": "^5.9.3"
+  }
+}

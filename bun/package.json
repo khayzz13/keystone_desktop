@@ -1,0 +1,21 @@
+{
+  "name": "keystone-desktop",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./host.ts",
+  "exports": {
+    ".": "./host.ts",
+    "./sdk": "./sdk/index.ts",
+    "./sdk/*": "./sdk/*.ts",
+    "./bridge": "./bridge.ts",
+    "./component": "./component.ts",
+    "./config": "./config.ts"
+  },
+  "dependencies": {
+    "@keystone/sdk": "workspace:./sdk"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "typescript": "^5.9.3"
+  }
+}

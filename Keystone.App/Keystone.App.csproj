@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- App bundle settings -->
+    <ApplicationId>com.keystone.engine</ApplicationId>
+    <ApplicationTitle>Keystone</ApplicationTitle>
+    <ApplicationVersion>1.0.0</ApplicationVersion>
+    <CFBundleShortVersionString>1.0.0</CFBundleShortVersionString>
+
+    <!-- macOS app bundle -->
+    <UseAppHost>true</UseAppHost>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <CreatePackage>false</CreatePackage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Keystone.Core/Keystone.Core.csproj" />
+    <ProjectReference Include="../Keystone.Core.Runtime/Keystone.Core.Runtime.csproj" />
+    <ProjectReference Include="../Keystone.Core.Platform/Keystone.Core.Platform.csproj" />
+    <ProjectReference Include="../Keystone.Core.Management/Keystone.Core.Management.csproj" />
+    <ProjectReference Include="../Keystone.Core.Graphics.Skia/Keystone.Core.Graphics.Skia.csproj" />
+    <ProjectReference Include="../Keystone.Toolkit/Keystone.Toolkit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <BundleResource Include="Resources/AppIcon.icns">
+      <LogicalName>AppIcon.icns</LogicalName>
+    </BundleResource>
+    <None Include="Info.plist">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

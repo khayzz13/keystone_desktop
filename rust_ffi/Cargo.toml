@@ -1,0 +1,4 @@
+[workspace]
+members = ["layout"]
+# "data" disabled — replaced by C# MarketDataStore.cs
+resolver = "2"
