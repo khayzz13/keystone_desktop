@@ -29,6 +29,21 @@ def run(cmd, cwd=None, check=True):
     return subprocess.run(cmd, cwd=cwd, check=check, shell=isinstance(cmd, str))
 
 
+def discover_services(svc_dir: Path) -> list:
+    """Discover service modules in a directory. Returns [(name, abs_path), ...]."""
+    result = []
+    if not svc_dir.exists():
+        return result
+    for entry in sorted(svc_dir.iterdir()):
+        if entry.is_file() and entry.suffix in ('.ts', '.tsx'):
+            result.append((entry.stem, str(entry)))
+        elif entry.is_dir():
+            idx = entry / "index.ts"
+            if idx.exists():
+                result.append((entry.name, str(idx)))
+    return result
+
+
 # ─── Config loading ──────────────────────────────────────────────────────────
 
 def load_config(app_root: Path) -> dict:
@@ -320,67 +335,8 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
                 run(["bun", "-e", bundle_script], cwd=bun_root)
                 pre_built_web = True
 
-        # 6b. Pre-bundle services → .js (no raw .ts in distribution)
-        #     Collect all service directories: main host + each worker's servicesDir
-        services_dir_name = "services"
-        service_dirs = [services_dir_name]  # main host services
+        # 6b. (Services are compiled directly into the exe — see steps 6e/6f)
         workers_cfg = config.get("workers", []) or []
-        for w in workers_cfg:
-            svc_dir = w.get("servicesDir", "")
-            if svc_dir and svc_dir not in service_dirs:
-                service_dirs.append(svc_dir)
-
-        def bundle_service_dir(rel_dir):
-            """Pre-bundle all .ts/.tsx files in a service directory to .js."""
-            svc_src = bun_root / rel_dir
-            if not svc_src.exists():
-                return
-            svc_dst = bundle_bun / rel_dir
-            svc_dst.mkdir(parents=True, exist_ok=True)
-            count = 0
-            for f in sorted(svc_src.iterdir()):
-                if f.is_file() and f.suffix in (".ts", ".tsx"):
-                    bundle_script = f"""
-                    const result = await Bun.build({{
-                        entrypoints: ["{f}"],
-                        outdir: "{svc_dst}",
-                        target: "bun",
-                        format: "esm",
-                        naming: "{f.stem}.[ext]",
-                    }});
-                    if (!result.success) {{
-                        for (const log of result.logs) console.error(log.message);
-                        process.exit(1);
-                    }}
-                    """
-                    run(["bun", "-e", bundle_script], cwd=bun_root)
-                    count += 1
-                elif f.is_dir():
-                    idx = f / "index.ts"
-                    if not idx.exists():
-                        continue
-                    out = svc_dst / f.name
-                    out.mkdir(exist_ok=True)
-                    bundle_script = f"""
-                    const result = await Bun.build({{
-                        entrypoints: ["{idx}"],
-                        outdir: "{out}",
-                        target: "bun",
-                        format: "esm",
-                        naming: "index.[ext]",
-                    }});
-                    if (!result.success) {{
-                        for (const log of result.logs) console.error(log.message);
-                        process.exit(1);
-                    }}
-                    """
-                    run(["bun", "-e", bundle_script], cwd=bun_root)
-                    count += 1
-            if count:
-                print(f"  Services: {rel_dir}/ ({count} bundled)")
-
-        for svc_dir in service_dirs:
-            bundle_service_dir(svc_dir)
 
         # 6c. Write pre-resolved bun config as JSON
         #     The compiled exe loads this directly — no .ts evaluation needed at runtime.
@@ -391,7 +347,7 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
             resolved_json.write_text(json.dumps(resolved_bun_config, indent=2))
             print(f"  Bun config: keystone.resolved.json (pre-resolved)")
 
-        # 6e. Compile host.ts → single-file executable
+        # 6e. Compile host.ts → single-file executable (services baked in)
         host_ts = bun_root / "node_modules" / "keystone-desktop" / "host.ts"
         if not host_ts.exists():
             host_ts = engine / "bun" / "host.ts"
@@ -399,13 +355,41 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
         if host_ts.exists():
             compiled_exe_name = safe_name
             compiled_exe_path = bundle_macos / compiled_exe_name
-            print(f"  Compiling Bun -> {compiled_exe_name}...")
-            run(["bun", "build", "--compile", str(host_ts),
-                 "--outfile", str(compiled_exe_path)])
+
+            # Discover main host services — static imports get compiled into the exe
+            services_dir_name = "services"
+            if resolved_bun_config:
+                services_dir_name = resolved_bun_config.get("services", {}).get("dir", "services")
+            main_services = discover_services(bun_root / services_dir_name)
+
+            if main_services:
+                # Generate wrapper that statically imports services then boots host.ts
+                wrapper = bun_root / "_compiled_host_entry.ts"
+                lines = []
+                for i, (name, path) in enumerate(main_services):
+                    lines.append(f'import * as _svc{i} from "{path}";')
+                lines.append('(globalThis as any).__KEYSTONE_COMPILED_SERVICES__ = {')
+                for i, (name, path) in enumerate(main_services):
+                    lines.append(f'  "{name}": _svc{i},')
+                lines.append('};')
+                lines.append(f'await import("{host_ts}");')
+                wrapper.write_text('\n'.join(lines))
+
+                svc_names = ", ".join(n for n, _ in main_services)
+                print(f"  Compiling Bun -> {compiled_exe_name} (services: {svc_names})...")
+                try:
+                    run(["bun", "build", "--compile", str(wrapper),
+                         "--outfile", str(compiled_exe_path)])
+                finally:
+                    wrapper.unlink(missing_ok=True)
+            else:
+                print(f"  Compiling Bun -> {compiled_exe_name}...")
+                run(["bun", "build", "--compile", str(host_ts),
+                     "--outfile", str(compiled_exe_path)])
         else:
             print(f"  WARNING: host.ts not found — Bun runtime not compiled")
 
-        # 6f. Compile worker-host.ts → standalone worker executable
+        # 6f. Compile worker-host.ts → standalone worker executable (services baked in)
         compiled_worker_name = None
         if workers_cfg:
             worker_host_ts = bun_root / "node_modules" / "keystone-desktop" / "worker-host.ts"
@@ -415,9 +399,53 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
             if worker_host_ts.exists():
                 compiled_worker_name = safe_name + "-worker"
                 compiled_worker_path = bundle_macos / compiled_worker_name
-                print(f"  Compiling Worker -> {compiled_worker_name}...")
-                run(["bun", "build", "--compile", str(worker_host_ts),
-                     "--outfile", str(compiled_worker_path)])
+
+                # Discover services for all workers
+                workers_services = {}
+                for w in workers_cfg:
+                    w_name = w.get("name", "")
+                    svc_dir = w.get("servicesDir", "")
+                    if w_name and svc_dir:
+                        svcs = discover_services(bun_root / svc_dir)
+                        if svcs:
+                            workers_services[w_name] = svcs
+
+                if workers_services:
+                    # Generate wrapper that statically imports all worker services
+                    wrapper = bun_root / "_compiled_worker_entry.ts"
+                    lines = []
+                    all_vars = []
+                    for w_name, svcs in workers_services.items():
+                        for i, (svc_name, path) in enumerate(svcs):
+                            var = f"_w_{w_name}_{i}"
+                            lines.append(f'import * as {var} from "{path}";')
+                            all_vars.append((w_name, svc_name, var))
+
+                    lines.append('(globalThis as any).__KEYSTONE_COMPILED_SERVICES__ = {')
+                    by_worker = {}
+                    for w_name, svc_name, var in all_vars:
+                        by_worker.setdefault(w_name, []).append((svc_name, var))
+                    for w_name, svcs in by_worker.items():
+                        lines.append(f'  "{w_name}": {{')
+                        for svc_name, var in svcs:
+                            lines.append(f'    "{svc_name}": {var},')
+                        lines.append('  },')
+                    lines.append('};')
+                    lines.append(f'await import("{worker_host_ts}");')
+                    wrapper.write_text('\n'.join(lines))
+
+                    total = sum(len(s) for s in workers_services.values())
+                    names = ", ".join(f"{w}({len(s)})" for w, s in workers_services.items())
+                    print(f"  Compiling Worker -> {compiled_worker_name} ({total} services: {names})...")
+                    try:
+                        run(["bun", "build", "--compile", str(wrapper),
+                             "--outfile", str(compiled_worker_path)])
+                    finally:
+                        wrapper.unlink(missing_ok=True)
+                else:
+                    print(f"  Compiling Worker -> {compiled_worker_name}...")
+                    run(["bun", "build", "--compile", str(worker_host_ts),
+                         "--outfile", str(compiled_worker_path)])
             else:
                 print(f"  WARNING: worker-host.ts not found — workers not compiled")
 
