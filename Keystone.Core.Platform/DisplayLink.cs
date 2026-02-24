@@ -8,7 +8,7 @@ using ObjCRuntime;
 
 namespace Keystone.Core.Platform;
 
-public class DisplayLink : IDisposable
+public class DisplayLink : IDisplayLink
 {
     CADisplayLink? _displayLink;
     readonly DisplayLinkTarget _target;

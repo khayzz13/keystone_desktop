@@ -10,7 +10,7 @@ using SkiaSharp;
 
 namespace Keystone.Core.Graphics.Skia;
 
-public class WindowGpuContext : IGpuContext, IDisposable
+public class WindowGpuContext : IWindowGpuContext
 {
     readonly IMTLDevice _device;
     readonly IMTLCommandQueue _queue;
@@ -167,6 +167,14 @@ public class WindowGpuContext : IGpuContext, IDisposable
         _grContext.PurgeUnlockedResources(true);
         _grContext.SetResourceCacheLimit(64 * 1024 * 1024);
     }
+
+    // === IWindowGpuContext (object-typed BeginFrame for platform-agnostic render thread) ===
+
+    SKCanvas? IWindowGpuContext.BeginFrame(object gpuSurface, int width, int height)
+        => BeginFrame((CAMetalLayer)gpuSurface, width, height);
+
+    void IWindowGpuContext.SetDrawableSize(object gpuSurface, uint width, uint height)
+        => ((CAMetalLayer)gpuSurface).DrawableSize = new CoreGraphics.CGSize(width, height);
 
     // === IGpuContext (object-typed for cross-assembly access) ===
     object IGpuContext.Device => _device;

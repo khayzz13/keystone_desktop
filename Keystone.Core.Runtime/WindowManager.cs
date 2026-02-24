@@ -3,7 +3,9 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text.Json;
-using AppKit; // ProcessEvents — NSApplication.NextEvent, NSEvent types
+#if MACOS
+using AppKit;
+#endif
 using Keystone.Core;
 using Keystone.Core.Management;
 using Keystone.Core.Platform;
@@ -218,8 +220,9 @@ public class WindowManager : IDisposable
 
     public IEnumerable<ManagedWindow> GetAllWindows() => _windowsById.Values;
 
-    // === Event Processing (macOS event loop — port for other platforms) ===
+    // === Event Processing ===
 
+#if MACOS
     public void ProcessEvents()
     {
         var nsApp = NSApplication.SharedApplication;
@@ -313,12 +316,6 @@ public class WindowManager : IDisposable
         }
     }
 
-    private void ForwardToBindContainer(string windowId, Action<BindContainer> action)
-    {
-        if (_bindContainers.TryGetValue(windowId, out var container))
-            action(container);
-    }
-
     private static KeyModifiers MapModifiers(NSEventModifierMask nsModifiers)
     {
         var mods = KeyModifiers.None;
@@ -327,6 +324,20 @@ public class WindowManager : IDisposable
         if (nsModifiers.HasFlag(NSEventModifierMask.AlternateKeyMask)) mods |= KeyModifiers.Alt;
         if (nsModifiers.HasFlag(NSEventModifierMask.CommandKeyMask)) mods |= KeyModifiers.Command;
         return mods;
+    }
+#else
+    public void ProcessEvents()
+    {
+        // Linux/Windows: platform-specific event loop goes here.
+        // GTK4: while (Gtk.Application.EventsPending()) Gtk.Application.MainIteration();
+        // Input events should be routed via GTK signal handlers connected in LinuxNativeWindow.
+    }
+#endif
+
+    private void ForwardToBindContainer(string windowId, Action<BindContainer> action)
+    {
+        if (_bindContainers.TryGetValue(windowId, out var container))
+            action(container);
     }
 
     // === Frame Rendering (per-window threads — see WindowRenderThread) ===

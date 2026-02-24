@@ -1,11 +1,13 @@
-using CoreAnimation;
-using CoreGraphics;
-using Keystone.Core;
+#if MACOS
 using Keystone.Core.Graphics.Skia;
+using Keystone.Core.Platform.MacOS;
+#else
+using Keystone.Core.Graphics.Skia.Vulkan;
+#endif
+using Keystone.Core;
 using Keystone.Core.Management;
 using Keystone.Core.Management.Bun;
 using Keystone.Core.Platform;
-using Keystone.Core.Platform.MacOS;
 using Keystone.Core.Plugins;
 using Keystone.Core.Rendering;
 
@@ -29,7 +31,7 @@ public class ManagedWindow : IDisposable
     private volatile bool _pendingReload;
 
     private INativeWindow? _nativeWindow;
-    private CAMetalLayer? _metalLayer; // GPU path — macOS/Metal specific
+    private object? _gpuSurface; // Platform GPU surface (CAMetalLayer on macOS, VkSurfaceKHR on Linux)
     private SkiaPaintCache? _paintCache;
 
     // Per-window render thread + GPU context
@@ -149,7 +151,7 @@ public class ManagedWindow : IDisposable
     public IWindowPlugin GetPlugin() { lock (_pluginLock) return _plugin; }
     public object? GetGpuContext() => _renderThread?.Gpu;
 
-    /// <summary>Expected IOSurface bytes for this window's CAMetalLayer drawable pool.
+    /// <summary>Expected drawable pool bytes for this window's GPU surface.
     /// 3 drawables × width × height × 4 bytes (BGRA).</summary>
     public long ExpectedIOSurfaceBytes =>
         _lastDrawW == 0 || _lastDrawH == 0 ? 0 : (long)_lastDrawW * _lastDrawH * 4 * 3;
@@ -237,19 +239,18 @@ public class ManagedWindow : IDisposable
 
         UpdateSize();
 
-        // GPU path — macOS/Metal specific. Port for other platforms.
-        if (nativeWindow.GetGpuSurface() is CAMetalLayer metalLayer)
+        // GPU path — platform-specific surface + context creation
+        _gpuSurface = nativeWindow.GetGpuSurface();
+        if (_gpuSurface != null)
         {
-            _metalLayer = metalLayer;
-            MacOSPlatform.ConfigureMetalLayer(metalLayer, SkiaWindow.Shared.Device, _scale);
-
-            _paintCache = new SkiaPaintCache();
-
-            // Create per-window GPU context + subscribe to VSync + create render thread
-            var gpu = SkiaWindow.CreateWindowContext();
-            var displayLink = ApplicationRuntime.Instance!.DisplayLink;
-            _vsyncSignal = displayLink.Subscribe();
-            _renderThread = new WindowRenderThread(this, gpu, _vsyncSignal);
+            var gpu = CreateGpuContext(_gpuSurface, _scale);
+            if (gpu != null)
+            {
+                _paintCache = new SkiaPaintCache();
+                var displayLink = ApplicationRuntime.Instance!.DisplayLink;
+                _vsyncSignal = displayLink.Subscribe();
+                _renderThread = new WindowRenderThread(this, gpu, _vsyncSignal);
+            }
         }
 
         // Set up window delegate for live resize
@@ -267,6 +268,23 @@ public class ManagedWindow : IDisposable
         _renderThread?.Start();
 
         Console.WriteLine($"[ManagedWindow] Created {WindowType} id={Id} size={_width}x{_height} scale={_scale}");
+    }
+
+    /// <summary>Create per-window GPU context from platform surface. Returns null if GPU not available.</summary>
+    private static IWindowGpuContext? CreateGpuContext(object gpuSurface, double scale)
+    {
+#if MACOS
+        if (gpuSurface is CoreAnimation.CAMetalLayer metalLayer)
+        {
+            MacOSPlatform.ConfigureMetalLayer(metalLayer, SkiaWindow.Shared.Device, scale);
+            return SkiaWindow.CreateWindowContext();
+        }
+#else
+        // Linux: GdkSurface handle → Vulkan context
+        if (gpuSurface is IntPtr gdkSurface && gdkSurface != IntPtr.Zero)
+            return VulkanSkiaWindow.CreateWindowContext(gdkSurface);
+#endif
+        return null;
     }
 
     /// <summary>
@@ -319,20 +337,18 @@ public class ManagedWindow : IDisposable
     /// Render on the per-window thread using its own GpuContext.
     /// Called by WindowRenderThread.
     /// </summary>
-    public void RenderOnThread(WindowGpuContext gpu)
+    public void RenderOnThread(IWindowGpuContext gpu)
     {
-        if (_metalLayer == null || _paintCache == null) return;
+        if (_gpuSurface == null || _paintCache == null) return;
 
         UpdateSize();
         if (_width == 0 || _height == 0) return;
 
-        // During live resize, freeze DrawableSize — render at the pre-resize resolution
-        // and let CoreAnimation scale. This prevents CAMetalLayer from allocating new
-        // IOSurface-backed drawables at every intermediate size (~15MB each at 2x retina).
-        // DrawableSize only updates when resize ENDS (single allocation).
+        // During live resize, freeze drawable size — render at the pre-resize resolution
+        // and let the compositor scale. Drawable size only updates when resize ENDS.
         if (!_isLiveResizing && (_width != _lastDrawW || _height != _lastDrawH))
         {
-            _metalLayer.DrawableSize = new CGSize(_width, _height);
+            gpu.SetDrawableSize(_gpuSurface, _width, _height);
             _lastDrawW = _width;
             _lastDrawH = _height;
         }
@@ -346,7 +362,7 @@ public class ManagedWindow : IDisposable
         SyncFrameState();
         _frameState.GpuContext = gpu;
 
-        var canvas = gpu.BeginFrame(_metalLayer, (int)drawW, (int)drawH);
+        var canvas = gpu.BeginFrame(_gpuSurface, (int)drawW, (int)drawH);
         if (canvas == null) return;
 
         try

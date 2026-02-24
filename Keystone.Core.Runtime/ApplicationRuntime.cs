@@ -4,14 +4,15 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
-using AppKit; // Dialog/shell invoke handlers, autorelease pool
+#if MACOS
+using AppKit;
+using Keystone.Core.Platform.MacOS;
+#endif
 using Keystone.Core;
-using Keystone.Core.Graphics.Skia;
 using Keystone.Core.Management;
 using Keystone.Core.Rendering;
 using Keystone.Core.Management.Bun;
 using Keystone.Core.Platform;
-using Keystone.Core.Platform.MacOS;
 using Keystone.Core.Plugins;
 
 namespace Keystone.Core.Runtime;
@@ -33,7 +34,7 @@ public class ApplicationRuntime : ICoreContext
     private readonly PluginRegistry _pluginRegistry;
     private readonly ActionRouter _actionRouter;
     private readonly CancellationTokenSource _cancellation = new();
-    private readonly DisplayLink _displayLink;
+    private readonly IDisplayLink _displayLink;
     private readonly ConcurrentQueue<Action> _pendingActions = new();
 
     private DyLibLoader? _loader;
@@ -48,7 +49,7 @@ public class ApplicationRuntime : ICoreContext
     private const long MemoryLimitBytes = 8L * 1024 * 1024 * 1024; // 8 GB
 
     public WindowManager WindowManager => _windowManager;
-    public DisplayLink DisplayLink => _displayLink;
+    public IDisplayLink DisplayLink => _displayLink;
     public PluginRegistry PluginRegistry => _pluginRegistry;
     public KeystoneConfig Config => _config;
     public string RootDir => _rootDir;
@@ -98,7 +99,11 @@ public class ApplicationRuntime : ICoreContext
         _windowManager = new WindowManager(platform);
         _windowManager.OnSpawnWindow = SpawnWindow;
         _windowManager.OnSpawnWindowAt = SpawnWindowAt;
+#if MACOS
         _displayLink = new DisplayLink();
+#else
+        _displayLink = new TimerDisplayLink();
+#endif
         _actionRouter = new ActionRouter(_windowManager);
         _instance = this;
 
@@ -136,8 +141,10 @@ public class ApplicationRuntime : ICoreContext
             Icons.Load(iconDir);
 
         // 3. Dock + menu bar — actions route through ActionRouter
+#if MACOS
         if (_platform is MacOSPlatform macPlatform)
             macPlatform.SetAppDelegate(() => _platform.BringAllWindowsToFront());
+#endif
         _platform.SetWindowListProvider(() => _windowManager.GetWindowsForDockMenu());
         _platform.InitializeMenu(action => _actionRouter.Execute(action, "menu"), _config);
 
@@ -522,7 +529,9 @@ public class ApplicationRuntime : ICoreContext
             if (!_displayLink.WaitForVsync(17))
                 continue;
 
+#if MACOS
             var pool = objc_autoreleasePoolPush();
+#endif
             _platform.PumpRunLoop(0.001);
             _windowManager.ProcessEvents();
             _windowManager.CheckTabDragState();
@@ -532,7 +541,9 @@ public class ApplicationRuntime : ICoreContext
             while (_pendingActions.TryDequeue(out var action))
                 try { action(); } catch (Exception ex) { Console.WriteLine($"[Runtime] {ex.Message}"); }
             CheckMemoryLimit();
+#if MACOS
             objc_autoreleasePoolPop(pool);
+#endif
         }
         _displayLink.Stop();
     }
@@ -769,6 +780,7 @@ public class ApplicationRuntime : ICoreContext
 
         // ── dialog ───────────────────────────────────────────────────────
 
+#if MACOS
         window.RegisterInvokeHandler("dialog:openFile", args =>
         {
             var tcs = new TaskCompletionSource<object?>();
@@ -862,6 +874,43 @@ public class ApplicationRuntime : ICoreContext
             });
             return tcs.Task;
         });
+#else
+        // Linux/Windows: use IPlatform dialog abstractions
+        window.RegisterInvokeHandler("dialog:openFile", async args =>
+        {
+            var title = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                        args.TryGetProperty("title", out var t) ? t.GetString() : null;
+            var multiple = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                           args.TryGetProperty("multiple", out var m) && m.GetBoolean();
+            var filters = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                          args.TryGetProperty("filters", out var f) ? f.EnumerateArray()
+                              .Select(e => e.GetString()?.TrimStart('.') ?? "")
+                              .Where(e => !string.IsNullOrEmpty(e)).ToArray() : null;
+            return await _platform.ShowOpenDialogAsync(new OpenDialogOptions(title, multiple, filters));
+        });
+
+        window.RegisterInvokeHandler("dialog:saveFile", async args =>
+        {
+            var title = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                        args.TryGetProperty("title", out var t) ? t.GetString() : null;
+            var defaultName = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                              args.TryGetProperty("defaultName", out var dn) ? dn.GetString() : null;
+            return await _platform.ShowSaveDialogAsync(new SaveDialogOptions(title, defaultName));
+        });
+
+        window.RegisterInvokeHandler("dialog:showMessage", async args =>
+        {
+            var title = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                        args.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+            var message = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                          args.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
+            string[]? buttons = null;
+            if (args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                args.TryGetProperty("buttons", out var b))
+                buttons = b.EnumerateArray().Select(e => e.GetString() ?? "OK").ToArray();
+            return await _platform.ShowMessageBoxAsync(new MessageBoxOptions(title, message, buttons));
+        });
+#endif
 
         // ── shell ─────────────────────────────────────────────────────────
 
@@ -892,14 +941,31 @@ public class ApplicationRuntime : ICoreContext
         });
     }
 
-    // === Memory monitoring (macOS-specific P/Invoke — port for other platforms) ===
+    // === Memory monitoring (platform-specific) ===
 
     public static long GetPhysicalFootprint()
     {
+#if MACOS
         var info = new TaskVmInfo();
         int count = Marshal.SizeOf<TaskVmInfo>() / sizeof(int);
         return task_info(mach_task_self(), 22 /* TASK_VM_INFO */, ref info, ref count) == 0
             ? info.phys_footprint : -1;
+#else
+        // Linux: read VmRSS from /proc/self/status
+        try
+        {
+            foreach (var line in File.ReadLines("/proc/self/status"))
+            {
+                if (line.StartsWith("VmRSS:"))
+                {
+                    var kb = long.Parse(line.Split(':')[1].Trim().Split(' ')[0]);
+                    return kb * 1024;
+                }
+            }
+        }
+        catch { }
+        return -1;
+#endif
     }
 
     private void CheckMemoryLimit()
@@ -924,7 +990,7 @@ public class ApplicationRuntime : ICoreContext
                 foreach (var w in windows)
                 {
                     expectedIOSurface += w.ExpectedIOSurfaceBytes;
-                    if (w.GetGpuContext() is WindowGpuContext wgpu)
+                    if (w.GetGpuContext() is IWindowGpuContext wgpu)
                     {
                         var (count, bytes) = wgpu.GetCacheStats();
                         totalResources += count;
@@ -948,7 +1014,7 @@ public class ApplicationRuntime : ICoreContext
         foreach (var w in windows)
         {
             expectedTotal += w.ExpectedIOSurfaceBytes;
-            if (w.GetGpuContext() is WindowGpuContext wgpu)
+            if (w.GetGpuContext() is IWindowGpuContext wgpu)
             {
                 var (_, bytes) = wgpu.GetCacheStats();
                 cacheTotal += bytes;
@@ -975,8 +1041,9 @@ public class ApplicationRuntime : ICoreContext
         }
     }
 
-    // === Native interop (macOS-specific — port for other platforms) ===
+    // === Native interop (platform-specific) ===
 
+#if MACOS
     [DllImport("/usr/lib/libobjc.A.dylib")]
     private static extern IntPtr objc_autoreleasePoolPush();
 
@@ -1005,4 +1072,5 @@ public class ApplicationRuntime : ICoreContext
         public long compressed, compressed_peak, compressed_lifetime;
         public long phys_footprint;
     }
+#endif
 }

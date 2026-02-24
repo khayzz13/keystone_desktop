@@ -6,9 +6,14 @@
 // Apps can use this instead of writing their own Program.cs.
 
 using Keystone.Core;
+#if MACOS
 using Keystone.Core.Graphics.Skia;
-using Keystone.Core.Platform;
 using Keystone.Core.Platform.MacOS;
+#else
+using Keystone.Core.Graphics.Skia.Vulkan;
+using Keystone.Core.Platform.Linux;
+#endif
+using Keystone.Core.Platform;
 using Keystone.Core.Plugins;
 
 namespace Keystone.Core.Runtime;
@@ -89,7 +94,8 @@ public class KeystoneApp
 
         Console.WriteLine($"[Keystone] Starting {_config.Name} ({_config.Id})...");
 
-        // Platform init — must happen before ApplicationRuntime
+        // Platform init + runtime bootstrap
+#if MACOS
         NativeLibraryLoader.Initialize();
         var platform = new MacOSPlatform();
         platform.Initialize();
@@ -110,6 +116,26 @@ public class KeystoneApp
         try { runtime.Run(); }
         catch (Exception ex) { Console.WriteLine($"[Keystone] Fatal: {ex}"); }
         finally { runtime.Shutdown(); }
+#else
+        var platform = new LinuxPlatform();
+        platform.Initialize();
+        VulkanSkiaWindow.Initialize();
+
+        var runtime = new ApplicationRuntime(_config, rootDir, platform);
+
+        runtime.OnInitialized += () =>
+        {
+            foreach (var reg in _registrations)
+                reg(runtime.PluginRegistry);
+        };
+
+        runtime.Initialize();
+
+        Console.WriteLine("[Keystone] Entering main loop...");
+        try { runtime.Run(); }
+        catch (Exception ex) { Console.WriteLine($"[Keystone] Fatal: {ex}"); }
+        finally { runtime.Shutdown(); }
+#endif
     }
 
     private static void SetupLogging()

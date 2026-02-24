@@ -20,14 +20,40 @@ public enum LineJoin : byte { Miter = 0, Round = 1, Bevel = 2 }
 /// </summary>
 public interface IGpuContext
 {
-    /// <summary>Shared GPU device (IMTLDevice). Thread-safe.</summary>
+    /// <summary>Shared GPU device (IMTLDevice / VkDevice). Thread-safe.</summary>
     object Device { get; }
-    /// <summary>Per-window command queue (IMTLCommandQueue).</summary>
+    /// <summary>Per-window command queue (IMTLCommandQueue / VkQueue).</summary>
     object Queue { get; }
     /// <summary>Per-window graphics context (GRContext) for Skia GPU operations. NOT thread-safe.</summary>
     object GraphicsContext { get; }
-    /// <summary>Import a Metal texture into Skia as an image. Returns SKImage? or null.</summary>
+    /// <summary>Import a native texture into Skia as an image. Returns SKImage? or null.</summary>
     object? ImportTexture(IntPtr textureHandle, int width, int height);
+}
+
+/// <summary>
+/// Per-window GPU rendering context used by the render thread.
+/// Implemented by WindowGpuContext (Metal) and VulkanGpuContext (Vulkan).
+/// Abstracts the BeginFrame → draw on SKCanvas → FinishAndPresent cycle.
+/// </summary>
+public interface IWindowGpuContext : IGpuContext, IDisposable
+{
+    /// <summary>Pre-compile GPU shaders on a tiny offscreen surface. Call once before first frame.</summary>
+    void WarmUpShaders();
+
+    /// <summary>Acquire a drawable, create an SKSurface, return the canvas. Null if acquisition fails.</summary>
+    SkiaSharp.SKCanvas? BeginFrame(object gpuSurface, int width, int height);
+
+    /// <summary>Flush Skia, present the drawable, dispose frame resources.</summary>
+    void FinishAndPresent();
+
+    /// <summary>Set the drawable surface size (called when window resizes).</summary>
+    void SetDrawableSize(object gpuSurface, uint width, uint height);
+
+    /// <summary>Aggressively purge all unlocked GPU resources. Call from render thread only.</summary>
+    void ForceFullPurge();
+
+    /// <summary>Get resource cache usage for diagnostics.</summary>
+    (int count, long bytes) GetCacheStats();
 }
 
 /// <summary>
