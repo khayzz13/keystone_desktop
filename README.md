@@ -2,7 +2,7 @@
 
 > **Early development / experimental.** macOS and Linux supported. Windows support is planned.
 
-A native desktop application framework. Three processes — a C# host, a Bun runtime, and a WebKit renderer — form a triangle with full communication across every path.
+A software foundation and framework enabaling you to build with HTML/TS/CSS and/or C#. Three processes — a C# host, a Bun runtime, and a WebKit renderer — form a triangle with full communication across every path.
 
 Build your frontend in web tech (React, Svelte, vanilla JS), your backend services in TypeScript, and your main process in C# with direct access to the native platform — Metal on macOS, Vulkan on Linux. Or skip any layer you don't need.
 
