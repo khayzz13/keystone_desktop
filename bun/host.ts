@@ -25,9 +25,21 @@ process.env.KEYSTONE_APP_ROOT = APP_ROOT;
 // === Load app config ===
 
 async function loadAppConfig(): Promise<ResolvedConfig> {
-  let userConfig: any = {};
+  // 1. Pre-resolved JSON config — written by the packager for distribution.
+  //    Contains the fully resolved config so no .ts evaluation is needed at runtime.
+  const resolvedPath = join(APP_ROOT, "keystone.resolved.json");
+  if (existsSync(resolvedPath)) {
+    try {
+      const resolved = JSON.parse(require("fs").readFileSync(resolvedPath, "utf-8"));
+      console.error(`[host] loaded pre-resolved config from ${resolvedPath}`);
+      return resolved as ResolvedConfig;
+    } catch (e: any) {
+      console.error(`[host] failed to load resolved config: ${e.message}, falling back`);
+    }
+  }
 
-  // 1. Try keystone.config.ts (developer-written bun config)
+  // 2. Dev mode — evaluate keystone.config.ts
+  let userConfig: any = {};
   const tsConfigPath = join(APP_ROOT, "keystone.config.ts");
   if (existsSync(tsConfigPath)) {
     try {
@@ -39,7 +51,7 @@ async function loadAppConfig(): Promise<ResolvedConfig> {
     }
   }
 
-  // 2. Check parent keystone.config.json for packager-injected flags (preBuiltWeb)
+  // 3. Check parent keystone.config.json for packager-injected flags (preBuiltWeb)
   //    In a packaged .app: APP_ROOT = Resources/bun/, JSON config = Resources/keystone.config.json
   for (const jsonPath of [
     join(APP_ROOT, "..", "keystone.config.json"),

@@ -175,6 +175,8 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
 
     src_contents = find_engine_contents(engine, debug)
     if src_contents:
+        # Skip engine bun/ inside Resources — step 6 builds bun/ from scratch with
+        # pre-bundled assets and compiled exes. The raw .ts engine files are dead weight.
         skip = {"_CodeSignature", "Info.plist", "PkgInfo"}
         for item in src_contents.iterdir():
             if item.name in skip:
@@ -183,7 +185,10 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
             if item.is_dir():
                 if dst.exists():
                     shutil.rmtree(dst)
-                shutil.copytree(item, dst)
+                if item.name == "Resources":
+                    shutil.copytree(item, dst, ignore=shutil.ignore_patterns("bun"))
+                else:
+                    shutil.copytree(item, dst)
             else:
                 shutil.copy2(item, dst)
         print(f"  Framework: copied")
@@ -253,16 +258,20 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
         web_dir_name = "web"
         web_components = {}
 
-        # Read bun-side config to find web component entries
-        # Use bun to evaluate the TypeScript config and extract component entries
+        # Read bun-side config: extract web entries + resolve full config for distribution.
+        # The resolved config is written as JSON so the compiled exe doesn't need .ts at runtime.
+        resolved_bun_config = None
         if bun_config_ts.exists():
             try:
                 extract_script = f"""
+                const {{ resolveConfig }} = require("{bun_root}/node_modules/@keystone/sdk/config.ts");
                 const mod = require("{bun_config_ts}");
                 const cfg = mod.default ?? mod;
+                const resolved = resolveConfig(cfg);
                 console.log(JSON.stringify({{
                     webDir: cfg.web?.dir ?? "web",
                     components: cfg.web?.components ?? {{}},
+                    resolved: resolved,
                 }}));
                 """
                 result = subprocess.run(["bun", "-e", extract_script],
@@ -271,6 +280,7 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
                     parsed = json.loads(result.stdout.strip())
                     web_dir_name = parsed.get("webDir", "web")
                     web_components = parsed.get("components", {})
+                    resolved_bun_config = parsed.get("resolved")
             except Exception as e:
                 print(f"  WARNING: Could not parse bun config: {e}")
 
@@ -372,16 +382,14 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
         for svc_dir in service_dirs:
             bundle_service_dir(svc_dir)
 
-        # 6c. Copy keystone.config.ts for runtime config
-        if bun_config_ts.exists():
-            shutil.copy2(bun_config_ts, bundle_bun / "keystone.config.ts")
-
-        # 6d. Copy node_modules (needed by compiled exe for SDK, runtime types, app deps)
-        nm_src = bun_root / "node_modules"
-        if nm_src.exists():
-            shutil.copytree(nm_src, bundle_bun / "node_modules",
-                            ignore=shutil.ignore_patterns(".bun", ".cache"))
-            print(f"  node_modules: copied")
+        # 6c. Write pre-resolved bun config as JSON
+        #     The compiled exe loads this directly — no .ts evaluation needed at runtime.
+        if resolved_bun_config:
+            # Inject preBuilt flag into the resolved config
+            resolved_bun_config["web"]["preBuilt"] = True
+            resolved_json = bundle_bun / "keystone.resolved.json"
+            resolved_json.write_text(json.dumps(resolved_bun_config, indent=2))
+            print(f"  Bun config: keystone.resolved.json (pre-resolved)")
 
         # 6e. Compile host.ts → single-file executable
         host_ts = bun_root / "node_modules" / "keystone-desktop" / "host.ts"
