@@ -218,9 +218,11 @@ public class ApplicationRuntime : ICoreContext
             string? compiledExe = null;
             if (bunConfig.CompiledExe is { } exeName)
             {
+                var macosDir = Path.Combine(assemblyDir, "..", "MacOS");
                 foreach (var candidate in new[] {
                     Path.Combine(exeDir, exeName),
                     Path.Combine(assemblyDir, exeName),
+                    Path.Combine(macosDir, exeName),
                 })
                 {
                     if (File.Exists(candidate)) { compiledExe = candidate; break; }
