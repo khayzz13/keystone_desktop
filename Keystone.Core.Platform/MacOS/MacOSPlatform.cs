@@ -80,7 +80,7 @@ public class MacOSPlatform : IPlatform
             nsWindow.Level = NSWindowLevel.Floating;
         }
 
-        return new MacOSNativeWindow(nsWindow);
+        return new MacOSNativeWindow(nsWindow, config.Renderless);
     }
 
     public INativeWindow CreateOverlayWindow(WindowConfig config)

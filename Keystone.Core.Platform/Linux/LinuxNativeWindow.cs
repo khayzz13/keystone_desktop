@@ -14,6 +14,7 @@ public class LinuxNativeWindow : INativeWindow
     private INativeWindowDelegate? _delegate;
     private bool _disposed;
     private readonly bool _isOverlay;
+    private readonly bool _renderless;
 
     // Cached for render thread reads
     private double _cachedScale;
@@ -30,6 +31,7 @@ public class LinuxNativeWindow : INativeWindow
     public LinuxNativeWindow(IntPtr app, WindowConfig config, bool isOverlay)
     {
         _isOverlay = isOverlay;
+        _renderless = config.Renderless;
 
         // Create application window
         _window = Gtk.ApplicationWindowNew(app);
@@ -184,6 +186,7 @@ public class LinuxNativeWindow : INativeWindow
 
     public object? GetGpuSurface()
     {
+        if (_renderless) return null;
         // Return the GdkSurface handle for Vulkan surface creation.
         // The Vulkan backend will use this to create VkSurfaceKHR.
         var native = Gtk.WidgetGetNative(_window);

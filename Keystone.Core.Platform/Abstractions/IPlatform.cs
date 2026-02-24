@@ -5,7 +5,7 @@ namespace Keystone.Core.Platform;
 
 public record WindowConfig(
     double X, double Y, double Width, double Height,
-    bool Floating = false, string TitleBarStyle = "hidden");
+    bool Floating = false, string TitleBarStyle = "hidden", bool Renderless = false);
 
 public record OpenDialogOptions(
     string? Title = null, bool Multiple = false, string[]? FileExtensions = null);

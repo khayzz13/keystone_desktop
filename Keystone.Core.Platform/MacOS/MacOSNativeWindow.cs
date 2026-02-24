@@ -11,7 +11,7 @@ public class MacOSNativeWindow : INativeWindow
 {
     private readonly NSWindow _nsWindow;
     private readonly NSView _contentView;
-    private readonly CAMetalLayer _metalLayer;
+    private readonly CAMetalLayer? _metalLayer;
     private KeystoneWindowDelegate? _delegate;
 
     // Shared across all windows — preserves current behavior
@@ -21,11 +21,11 @@ public class MacOSNativeWindow : INativeWindow
     private double _cachedScale;
     private (double w, double h) _cachedBounds;
 
-    internal MacOSNativeWindow(NSWindow nsWindow)
+    internal MacOSNativeWindow(NSWindow nsWindow, bool renderless = false)
     {
         _nsWindow = nsWindow;
         _contentView = nsWindow.ContentView!;
-        _metalLayer = CreateMetalLayer(_contentView);
+        _metalLayer = renderless ? null : CreateMetalLayer(_contentView);
 
         // Initialize cached values on main thread
         _cachedScale = (double)_nsWindow.BackingScaleFactor;

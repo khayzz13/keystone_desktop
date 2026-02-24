@@ -638,7 +638,7 @@ public class ApplicationRuntime : ICoreContext
         var x = sx + (sw - defaultW) / 2;
         var y = sy + (sh - defaultH) / 2;
 
-        var config = new Platform.WindowConfig(x, y, defaultW, defaultH, floating, titleBarStyle);
+        var config = new Platform.WindowConfig(x, y, defaultW, defaultH, floating, titleBarStyle, winCfg?.Renderless ?? false);
         var nativeWindow = _platform.CreateWindow(config);
 
         var managedWindow = CreateWindow(plugin);

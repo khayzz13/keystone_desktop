@@ -166,6 +166,9 @@ public class KeystoneConfig
             if (!new[] { "hidden", "toolkit", "none" }.Contains(window.TitleBarStyle, StringComparer.OrdinalIgnoreCase))
                 ThrowInvalid(path, $"'{prefix}.titleBarStyle' must be one of: hidden, toolkit, none");
 
+            if (window.Renderless && string.Equals(window.TitleBarStyle, "toolkit", StringComparison.OrdinalIgnoreCase))
+                ThrowInvalid(path, $"'{prefix}.renderless' cannot be used with titleBarStyle \"toolkit\" — toolkit requires GPU rendering");
+
             if (window.Toolbar?.Items == null) continue;
             for (var j = 0; j < window.Toolbar.Items.Count; j++)
             {
@@ -368,6 +371,15 @@ public class WindowConfig
     /// </summary>
     [JsonPropertyName("floating")]
     public bool Floating { get; set; } = false;
+
+    /// <summary>
+    /// Skip GPU context and render thread for this window. The window is a native shell
+    /// with a full-window WebKit view — no Metal/Vulkan surface is allocated, no Skia
+    /// render thread is started. Reduces per-window memory by ~30–60 MB.
+    /// Incompatible with titleBarStyle "toolkit" (which requires GPU rendering).
+    /// </summary>
+    [JsonPropertyName("renderless")]
+    public bool Renderless { get; set; } = false;
 }
 
 public class ToolbarConfig
