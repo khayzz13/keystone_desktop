@@ -1,6 +1,6 @@
 # Contributing
 
-Keystone-Desktop is in early development. The core runtime works, but there's a lot left to build — see the README for current status.
+Keystone-Desktop is in early development. The core framework / software foundation works, but there's a lot left to build — see the README for current status.
 
 Right now I'm the only person working on this, and I'm looking for contributors. If something interests you, open an issue or start a discussion. For anything beyond small fixes, it's worth talking through the approach first since the architecture is still settling in places.
 
@@ -20,9 +20,9 @@ Right now I'm the only person working on this, and I'm looking for contributors.
 
 1. Fork the repo
 2. Check the [docs/](docs/) for an overview of the architecture
-   2a. (Optional) Utilize Claude (Opus) or another frontier model, the codebase is still enough that it can most/all of the source in one context window and still have some room to reason about it.  
+2a. (Optional) Utilize Claude (Opus) or another frontier model, the codebase is still enough that it can most/all of the source in one context window and still have some room to reason about it.  
 3. Open an issue describing what you'd like to work on
-  3a. you can also reach me on discord  
+3a. you can also reach me on discord  
 4. Submit a PR when ready
 
 ## Pre-PR Checks
