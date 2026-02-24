@@ -69,6 +69,7 @@ public class ApplicationRuntime : ICoreContext
 
     private string? _bunHostPath;
     private string? _bunAppRoot;
+    private string? _bunCompiledExe;
     private int _bunRestartAttempt;
     private volatile bool _bunRestartScheduled;
 
@@ -84,7 +85,7 @@ public class ApplicationRuntime : ICoreContext
     void ICoreContext.RunOnMainThread(Action action) => RunOnMainThread(action);
     void ICoreContext.RunOnMainThreadAndWait(Action action) => RunOnMainThreadAndWait(action);
     IBunService ICoreContext.Bun => BunManager.Instance;
-    BunWorkerManager ICoreContext.Workers => BunWorkerManager.Instance;
+    IBunWorkerManager ICoreContext.Workers => BunWorkerManager.Instance;
     IHttpRouter ICoreContext.Http => _httpRouter;
 
     public ApplicationRuntime(KeystoneConfig config, string rootDir)
@@ -218,9 +219,11 @@ public class ApplicationRuntime : ICoreContext
             string? compiledExe = null;
             if (bunConfig.CompiledExe is { } exeName)
             {
+                var macosDir = Path.Combine(assemblyDir, "..", "MacOS");
                 foreach (var candidate in new[] {
                     Path.Combine(exeDir, exeName),
                     Path.Combine(assemblyDir, exeName),
+                    Path.Combine(macosDir, exeName),
                 })
                 {
                     if (File.Exists(candidate)) { compiledExe = candidate; break; }
@@ -315,6 +318,7 @@ public class ApplicationRuntime : ICoreContext
     {
         _bunHostPath = hostPath;
         _bunAppRoot = appBunRoot;
+        _bunCompiledExe = compiledExe;
 
         var process = new BunProcess();
         WireBunProcess(process, hostPath, appBunRoot);
@@ -402,7 +406,7 @@ public class ApplicationRuntime : ICoreContext
                 var process = new BunProcess();
                 WireBunProcess(process, _bunHostPath!, _bunAppRoot!);
 
-                if (process.Start(_bunHostPath!, _bunAppRoot!))
+                if (process.Start(_bunHostPath!, _bunAppRoot!, _bunCompiledExe))
                 {
                     _bunProcess = process;
                     Console.WriteLine($"[ApplicationRuntime] Bun restarted (attempt {attempt})");
@@ -424,13 +428,31 @@ public class ApplicationRuntime : ICoreContext
         var workers = _config.Workers;
         if (workers == null || workers.Count == 0) return;
 
+        // Resolve compiled worker exe for package mode
+        string? compiledWorkerExe = null;
+        if (_config.Bun?.CompiledWorkerExe is { } workerExeName)
+        {
+            var assemblyDir = Path.GetDirectoryName(typeof(ApplicationRuntime).Assembly.Location) ?? "";
+            var macosDir = Path.Combine(assemblyDir, "..", "MacOS");
+            foreach (var candidate in new[] {
+                Path.Combine(assemblyDir, workerExeName),
+                Path.Combine(macosDir, workerExeName),
+            })
+            {
+                if (File.Exists(candidate)) { compiledWorkerExe = candidate; break; }
+            }
+
+            if (compiledWorkerExe != null)
+                Console.WriteLine($"[ApplicationRuntime] Worker exe: {compiledWorkerExe}");
+        }
+
         var workerHostPath = Path.Combine(Path.GetDirectoryName(_bunHostPath!)!, "worker-host.ts");
         var readyCount = 0;
         var totalAutoStart = workers.Count(w => w.AutoStart);
 
         foreach (var cfg in workers.Where(w => w.AutoStart))
         {
-            var worker = BunWorkerManager.Instance.Spawn(cfg, workerHostPath, _bunAppRoot!);
+            var worker = BunWorkerManager.Instance.Spawn(cfg, workerHostPath, _bunAppRoot!, compiledWorkerExe);
             worker.OnRestart = attempt =>
                 Console.WriteLine($"[ApplicationRuntime] Worker '{cfg.Name}' recovered (attempt {attempt})");
 

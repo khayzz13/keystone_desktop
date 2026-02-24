@@ -3,7 +3,6 @@
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Keystone.Core.Management.Bun;
 
 namespace Keystone.Core;
 
@@ -233,6 +232,13 @@ public class BunConfig
     /// </summary>
     [JsonPropertyName("compiledExe")]
     public string? CompiledExe { get; set; }
+
+    /// <summary>
+    /// Name of the compiled worker executable. Set by the packager.
+    /// Workers use this instead of spawning via system bun.
+    /// </summary>
+    [JsonPropertyName("compiledWorkerExe")]
+    public string? CompiledWorkerExe { get; set; }
 }
 
 // === Window, toolbar, and menu configs (unchanged) ===

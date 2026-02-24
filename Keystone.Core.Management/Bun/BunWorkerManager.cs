@@ -5,10 +5,12 @@
 
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Keystone.Core;
+using Keystone.Core.Plugins;
 
 namespace Keystone.Core.Management.Bun;
 
-public class BunWorkerManager
+public class BunWorkerManager : IBunWorkerManager
 {
     private static BunWorkerManager? _instance;
     public static BunWorkerManager Instance => _instance ??= new BunWorkerManager();
@@ -18,7 +20,8 @@ public class BunWorkerManager
     public BunWorker? this[string name] => _workers.GetValueOrDefault(name);
     public IReadOnlyDictionary<string, BunWorker> All => _workers;
 
-    public BunWorker Spawn(BunWorkerConfig config, string workerHostPath, string appRoot)
+    public BunWorker Spawn(BunWorkerConfig config, string workerHostPath, string appRoot,
+        string? compiledExe = null)
     {
         if (_workers.TryGetValue(config.Name, out var existing))
         {
@@ -28,7 +31,7 @@ public class BunWorkerManager
 
         var worker = new BunWorker(config);
         _workers[config.Name] = worker;
-        worker.Start(workerHostPath, appRoot);
+        worker.Start(workerHostPath, appRoot, compiledExe);
         return worker;
     }
 

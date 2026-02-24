@@ -5,6 +5,7 @@
 
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Keystone.Core;
 
 namespace Keystone.Core.Management.Bun;
 
@@ -30,6 +31,7 @@ public class BunWorker : IDisposable
     private bool _restartScheduled;
     private string? _workerHostPath;
     private string? _appRoot;
+    private string? _compiledExe;
     private volatile bool _shutdownRequested;
 
     // Events
@@ -43,10 +45,11 @@ public class BunWorker : IDisposable
         Config = config;
     }
 
-    public bool Start(string workerHostPath, string appRoot)
+    public bool Start(string workerHostPath, string appRoot, string? compiledExe = null)
     {
         _workerHostPath = workerHostPath;
         _appRoot = appRoot;
+        _compiledExe = compiledExe;
         _shutdownRequested = false;
 
         var process = new BunProcess();
@@ -81,7 +84,7 @@ public class BunWorker : IDisposable
             ScheduleRestart();
         };
 
-        if (!process.Start(workerHostPath, appRoot, env: env))
+        if (!process.Start(workerHostPath, appRoot, compiledExe, env: env))
         {
             Console.WriteLine($"[BunWorker:{Name}] Failed to start");
             return false;
@@ -154,7 +157,7 @@ public class BunWorker : IDisposable
             _restartScheduled = false;
             _process?.Dispose();
 
-            if (Start(_workerHostPath!, _appRoot!))
+            if (Start(_workerHostPath!, _appRoot!, _compiledExe))
             {
                 _restartCount = 0;
                 OnRestart?.Invoke(attempt);

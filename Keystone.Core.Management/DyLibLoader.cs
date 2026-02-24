@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Threading;
 using Keystone.Core;
+using Keystone.Core.Platform;
 using Keystone.Core.Plugins;
 
 namespace Keystone.Core.Management;

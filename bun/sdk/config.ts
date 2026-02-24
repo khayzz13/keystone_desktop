@@ -32,6 +32,12 @@ export type KeystoneRuntimeConfig = {
      * }
      */
     components?: Record<string, string>;
+    /**
+     * Pre-built mode — set by the packager for distribution bundles.
+     * When true, host.ts skips Bun.build() and serves existing .js/.css from web.dir.
+     * Disables HMR and file watching for web components.
+     */
+    preBuilt?: boolean;
   };
 
   /** HTTP server that serves bundled web components and static assets */
@@ -76,7 +82,7 @@ export type ResolvedConfig = Required<{
 
 const defaults: ResolvedConfig = {
   services: { dir: "services", hotReload: true },
-  web: { dir: "web", autoBundle: true, hotReload: true, components: {} },
+  web: { dir: "web", autoBundle: true, hotReload: true, components: {}, preBuilt: false },
   http: { enabled: true, hostname: "127.0.0.1" },
   watch: { extensions: [".ts", ".tsx", ".js", ".jsx"], debounceMs: 150 },
   health: { enabled: true, intervalMs: 30_000 },

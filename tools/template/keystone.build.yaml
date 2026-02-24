@@ -1,0 +1,12 @@
+# {{APP_NAME}} — Build Configuration
+# This file controls build-time behavior. Runtime config lives in keystone.config.json.
+
+# Engine version to use (auto-downloaded if not found locally)
+engine: "{{KEYSTONE_VERSION}}"
+
+# Build / packaging options
+build:
+  category: public.app-category.utilities
+  # pluginMode: side-by-side    # side-by-side (default) or bundled
+  # dmg: false                  # create DMG alongside .app
+  # signingIdentity: "-"        # codesign identity (- = ad-hoc)

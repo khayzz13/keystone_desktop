@@ -9,7 +9,7 @@
 
 process.title = process.env.KEYSTONE_APP_NAME ?? process.env.KEYSTONE_APP_ID ?? "keystone";
 
-import { readdirSync, existsSync, statSync, watch } from "fs";
+import { readdirSync, existsSync, statSync, watch, realpathSync } from "fs";
 import { join } from "path";
 import type { ServerWebSocket } from "bun";
 import type { Request, ServiceContext, WorkerConnection } from "./types";
@@ -25,18 +25,52 @@ process.env.KEYSTONE_APP_ROOT = APP_ROOT;
 // === Load app config ===
 
 async function loadAppConfig(): Promise<ResolvedConfig> {
-  const configPath = join(APP_ROOT, "keystone.config.ts");
-  if (existsSync(configPath)) {
+  // 1. Pre-resolved JSON config — written by the packager for distribution.
+  //    Contains the fully resolved config so no .ts evaluation is needed at runtime.
+  const resolvedPath = join(APP_ROOT, "keystone.resolved.json");
+  if (existsSync(resolvedPath)) {
     try {
-      const mod = require(configPath);
-      const userConfig = mod.default ?? mod;
-      console.error(`[host] loaded config from ${configPath}`);
-      return resolveConfig(userConfig);
+      const resolved = JSON.parse(require("fs").readFileSync(resolvedPath, "utf-8"));
+      console.error(`[host] loaded pre-resolved config from ${resolvedPath}`);
+      return resolved as ResolvedConfig;
+    } catch (e: any) {
+      console.error(`[host] failed to load resolved config: ${e.message}, falling back`);
+    }
+  }
+
+  // 2. Dev mode — evaluate keystone.config.ts
+  let userConfig: any = {};
+  const tsConfigPath = join(APP_ROOT, "keystone.config.ts");
+  if (existsSync(tsConfigPath)) {
+    try {
+      const mod = require(tsConfigPath);
+      userConfig = mod.default ?? mod;
+      console.error(`[host] loaded config from ${tsConfigPath}`);
     } catch (e: any) {
       console.error(`[host] failed to load config: ${e.message}, using defaults`);
     }
   }
-  return resolveConfig({});
+
+  // 3. Check parent keystone.config.json for packager-injected flags (preBuiltWeb)
+  //    In a packaged .app: APP_ROOT = Resources/bun/, JSON config = Resources/keystone.config.json
+  for (const jsonPath of [
+    join(APP_ROOT, "..", "keystone.config.json"),
+    join(APP_ROOT, "keystone.config.json"),
+  ]) {
+    if (existsSync(jsonPath)) {
+      try {
+        const json = JSON.parse(require("fs").readFileSync(jsonPath, "utf-8"));
+        const bunCfg = json.bun;
+        if (bunCfg?.preBuiltWeb) {
+          userConfig.web = { ...userConfig.web, preBuilt: true };
+          console.error(`[host] pre-built mode enabled from ${jsonPath}`);
+        }
+        break;
+      } catch {}
+    }
+  }
+
+  return resolveConfig(userConfig);
 }
 
 const config = await loadAppConfig();
@@ -286,7 +320,7 @@ async function reloadAll() {
 
 // === File watcher — hot-reload (conditional) ===
 
-const watchEnabled = config.services.hotReload || config.web.hotReload;
+const watchEnabled = !config.web.preBuilt && (config.services.hotReload || config.web.hotReload);
 
 if (watchEnabled) {
   const SHARED_FILES = new Set([join(ENGINE_ROOT, "types.ts")]);
@@ -324,7 +358,11 @@ if (watchEnabled) {
       // Check explicit entry map first (file can live anywhere in APP_ROOT)
       const explicitName = explicitEntryMap.get(abs);
       if (explicitName) {
-        Bun.build(buildOpts([abs], explicitName)).then(() => {
+        Bun.build(buildOpts([abs], explicitName)).then((result: any) => {
+          if (!result.success) {
+            for (const log of result.logs) console.error(`[host] ${explicitName}: ${log.message}`);
+            return;
+          }
           bundledComponents.add(explicitName);
           console.error(`[host] rebundled component "${explicitName}"`);
           serverRef.publish("all", JSON.stringify({ type: "__hmr__", component: explicitName }));
@@ -335,7 +373,11 @@ if (watchEnabled) {
       if (rel.startsWith(config.web.dir + "/")) {
         const file = rel.replace(config.web.dir + "/", "");
         const name = file.replace(/\.[jt]sx?$/, "");
-        Bun.build(buildOpts([abs], name)).then(() => {
+        Bun.build(buildOpts([abs], name)).then((result: any) => {
+          if (!result.success) {
+            for (const log of result.logs) console.error(`[host] ${name}: ${log.message}`);
+            return;
+          }
           bundledComponents.add(name);
           console.error(`[host] rebundled web component: ${name}`);
           serverRef.publish("all", JSON.stringify({ type: "__hmr__", component: name }));
@@ -371,8 +413,18 @@ if (watchEnabled) {
 
 const bundledComponents = new Set<string>();
 
-// Resolve @keystone/sdk/* imports to engine SDK directory at bundle time
-const sdkDir = join(ENGINE_ROOT, "sdk");
+// Resolve @keystone/sdk/* imports to the SDK directory at bundle time.
+// Prefer APP_ROOT's node_modules/@keystone/sdk when present — its path is
+// clean. ENGINE_ROOT may be a .bun/ copy whose path contains '@' and '+'
+// characters, which Bun's onResolve rejects as invalid absolute paths.
+const sdkDir = (() => {
+  const appSdk = join(APP_ROOT, "node_modules", "@keystone", "sdk");
+  if (existsSync(appSdk)) {
+    try { return realpathSync(appSdk); } catch { return appSdk; }
+  }
+  try { return realpathSync(join(ENGINE_ROOT, "sdk")); }
+  catch { return join(ENGINE_ROOT, "sdk"); }
+})();
 const keystoneResolvePlugin = {
   name: "keystone-sdk",
   setup(build: any) {
@@ -389,7 +441,7 @@ function buildOpts(entrypoints: string[], name: string) {
     outdir: webDir,
     target: "browser" as const,
     format: "esm" as const,
-    naming: `${name}.js`,
+    naming: `${name}.[ext]`,
     plugins: [keystoneResolvePlugin],
   };
 }
@@ -398,13 +450,30 @@ function buildOpts(entrypoints: string[], name: string) {
 const explicitEntryMap = new Map<string, string>();
 
 async function bundleWebComponents() {
+  // Pre-built mode: skip Bun.build(), just register existing .js files.
+  // Set by the packager for distribution bundles where web components are pre-bundled.
+  if (config.web.preBuilt) {
+    if (!existsSync(webDir)) return;
+    for (const file of readdirSync(webDir)) {
+      if (!file.endsWith(".js")) continue;
+      const name = file.replace(/\.js$/, "");
+      bundledComponents.add(name);
+    }
+    console.error(`[host] pre-built mode: registered ${bundledComponents.size} components`);
+    return;
+  }
+
   // 1. Explicit entries from config.web.components — name → relative entry path
   for (const [name, relPath] of Object.entries(config.web.components)) {
     const abs = join(APP_ROOT, relPath);
     explicitEntryMap.set(abs, name);
     try {
-      await Bun.build(buildOpts([abs], name));
-      bundledComponents.add(name);
+      const result = await Bun.build(buildOpts([abs], name));
+      if (result.success) {
+        bundledComponents.add(name);
+      } else {
+        for (const log of result.logs) console.error(`[host] ${name}: ${log.message}`);
+      }
     } catch (e: any) {
       console.error(`[host] Failed to bundle component "${name}" from ${relPath}: ${e.message}`);
     }
@@ -419,8 +488,12 @@ async function bundleWebComponents() {
     if (explicitFiles.has(abs)) continue; // already registered by name above
     const name = file.replace(/\.[jt]sx?$/, "");
     try {
-      await Bun.build(buildOpts([abs], name));
-      bundledComponents.add(name);
+      const result = await Bun.build(buildOpts([abs], name));
+      if (result.success) {
+        bundledComponents.add(name);
+      } else {
+        for (const log of result.logs) console.error(`[host] ${name}: ${log.message}`);
+      }
     } catch (e: any) {
       console.error(`[host] Failed to bundle ${config.web.dir}/${file}: ${e.message}`);
     }
@@ -498,6 +571,7 @@ function generateShell(component: string, port: number, windowId: string = ''): 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1e1e23;overflow:hidden}#root{width:100vw;height:100vh}</style>
+<link rel="stylesheet" href="/${config.web.dir}/${component}.css">
 </head><body><div id="root"></div>
 <script>
 window.__KEYSTONE_PORT__=${port};
@@ -543,6 +617,10 @@ window.__KEYSTONE_PORT__=${port};
 const slots={};
 window.__addSlot=async(key,scriptUrl,x,y,w,h,windowId)=>{
   if(slots[key])return;
+  const cssUrl=scriptUrl.replace(/\.js$/,'.css');
+  const link=document.createElement('link');
+  link.rel='stylesheet';link.href=cssUrl;
+  document.head.appendChild(link);
   const div=document.createElement('div');
   div.className='slot';
   div.style.cssText='position:absolute;overflow:hidden;left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px';
