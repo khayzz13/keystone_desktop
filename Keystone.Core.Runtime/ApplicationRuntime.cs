@@ -84,7 +84,7 @@ public class ApplicationRuntime : ICoreContext
     void ICoreContext.RunOnMainThread(Action action) => RunOnMainThread(action);
     void ICoreContext.RunOnMainThreadAndWait(Action action) => RunOnMainThreadAndWait(action);
     IBunService ICoreContext.Bun => BunManager.Instance;
-    BunWorkerManager ICoreContext.Workers => BunWorkerManager.Instance;
+    IBunWorkerManager ICoreContext.Workers => BunWorkerManager.Instance;
     IHttpRouter ICoreContext.Http => _httpRouter;
 
     public ApplicationRuntime(KeystoneConfig config, string rootDir)

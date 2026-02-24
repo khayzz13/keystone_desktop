@@ -5,10 +5,12 @@
 
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Keystone.Core;
+using Keystone.Core.Plugins;
 
 namespace Keystone.Core.Management.Bun;
 
-public class BunWorkerManager
+public class BunWorkerManager : IBunWorkerManager
 {
     private static BunWorkerManager? _instance;
     public static BunWorkerManager Instance => _instance ??= new BunWorkerManager();

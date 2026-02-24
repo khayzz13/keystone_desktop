@@ -3,7 +3,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using Keystone.Core.Management.Bun;
 using Keystone.Core.Rendering;
 using Keystone.Core.UI;
 
@@ -156,7 +155,7 @@ public interface ICoreContext
     IBunService Bun { get; }
 
     /// <summary>Spawn and manage additional Bun worker processes.</summary>
-    BunWorkerManager Workers { get; }
+    IBunWorkerManager Workers { get; }
 
     /// <summary>
     /// HTTP-style route router. Register handlers here and call them from the browser
@@ -268,6 +267,16 @@ public interface IReloadableService : IServicePlugin
 // ═══════════════════════════════════════════════════════════════
 //  Bun Integration
 // ═══════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Registry and lifecycle controller for Bun worker processes.
+/// Obtain via ICoreContext.Workers.
+/// </summary>
+public interface IBunWorkerManager
+{
+    void Stop(string name);
+    void StopAll();
+}
 
 public interface IBunService
 {
