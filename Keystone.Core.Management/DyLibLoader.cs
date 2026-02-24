@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
@@ -28,6 +29,7 @@ public class DyLibLoader
     private readonly ConcurrentDictionary<string, DateTime> _lastReloadTime = new();
     private readonly object _lock = new();
     private readonly List<CustomPluginTypeHandler> _customHandlers = new();
+    private readonly string? _hostTeamIdentifier;
     private FileSystemWatcher? _watcher;
     private bool _hotReloadEnabled;
     private const int DebounceMs = 200;
@@ -74,6 +76,7 @@ public class DyLibLoader
 
     // Legacy shared context for non-hot-reload mode
     private AssemblyLoadContext? _sharedContext;
+    public bool AllowExternalSignatures { get; set; }
 
     /// <summary>
     /// Core context passed to ICorePlugin.Initialize(). Set by ApplicationRuntime after construction.
@@ -87,6 +90,7 @@ public class DyLibLoader
         _registry = registry;
         Instance = this;
         _hotReloadEnabled = Environment.GetEnvironmentVariable("DISABLE_HOT_RELOAD") != "1";
+        _hostTeamIdentifier = ReadTeamIdentifier(Environment.ProcessPath);
 
         if (!_hotReloadEnabled)
         {
@@ -96,6 +100,9 @@ public class DyLibLoader
 
         AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
         Console.WriteLine($"[DyLibLoader] Hot-reload: {(_hotReloadEnabled ? "ENABLED" : "DISABLED")}");
+        Console.WriteLine(_hostTeamIdentifier != null
+            ? $"[DyLibLoader] Signature enforcement: team={_hostTeamIdentifier}"
+            : "[DyLibLoader] Signature enforcement: disabled (host binary has no TeamIdentifier)");
     }
 
     /// <summary>
@@ -175,6 +182,13 @@ public class DyLibLoader
 
         lock (_lock)
         {
+            if (!ValidatePluginBinary(path, out var validationError))
+            {
+                Console.WriteLine($"[DyLibLoader] Rejected {name}: {validationError}");
+                Notifications.Error($"Plugin rejected: {name} — {validationError}");
+                return;
+            }
+
             // Unload old version first
             if (_loaded.TryGetValue(name, out var oldInfo))
                 UnloadInternal(name, oldInfo);
@@ -470,5 +484,113 @@ public class DyLibLoader
     {
         _watcher?.Dispose();
         _watcher = null;
+    }
+
+    private bool ValidatePluginBinary(string path, out string error)
+    {
+        error = string.Empty;
+
+        // Development mode: host process is ad-hoc/unsigned, so TeamIdentifier checks can't be enforced.
+        if (string.IsNullOrEmpty(_hostTeamIdentifier))
+            return true;
+
+        if (!File.Exists(path))
+        {
+            error = "file not found";
+            return false;
+        }
+
+        if (!VerifyCodeSignature(path, out var verifyOutput))
+        {
+            error = $"codesign verify failed: {FirstLine(verifyOutput)}";
+            return false;
+        }
+
+        var pluginTeam = ReadTeamIdentifier(path);
+        if (string.IsNullOrEmpty(pluginTeam))
+        {
+            error = "missing TeamIdentifier";
+            return false;
+        }
+
+        if (!AllowExternalSignatures && !string.Equals(pluginTeam, _hostTeamIdentifier, StringComparison.Ordinal))
+        {
+            error = $"TeamIdentifier mismatch (plugin={pluginTeam}, host={_hostTeamIdentifier})";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string? ReadTeamIdentifier(string? binaryPath)
+    {
+        if (string.IsNullOrEmpty(binaryPath))
+            return null;
+
+        if (!RunTool("/usr/bin/codesign", new[] { "-d", "--verbose=4", binaryPath }, out var output))
+            return null;
+
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            const string Prefix = "TeamIdentifier=";
+            if (!trimmed.StartsWith(Prefix, StringComparison.Ordinal))
+                continue;
+
+            var team = trimmed[Prefix.Length..].Trim();
+            return string.Equals(team, "not set", StringComparison.OrdinalIgnoreCase) || team.Length == 0
+                ? null
+                : team;
+        }
+
+        return null;
+    }
+
+    private static bool VerifyCodeSignature(string path, out string output)
+        => RunTool("/usr/bin/codesign", new[] { "--verify", "--strict", "--verbose=2", path }, out output);
+
+    private static bool RunTool(string fileName, string[] args, out string output)
+    {
+        output = string.Empty;
+        try
+        {
+            var psi = new ProcessStartInfo(fileName)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            foreach (var arg in args)
+                psi.ArgumentList.Add(arg);
+
+            using var process = Process.Start(psi);
+            if (process == null)
+            {
+                output = "failed to start process";
+                return false;
+            }
+
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            output = $"{stdout}\n{stderr}".Trim();
+            return process.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            output = ex.Message;
+            return false;
+        }
+    }
+
+    private static string FirstLine(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "unknown error";
+        var idx = text.IndexOf('\n');
+        return idx >= 0 ? text[..idx].Trim() : text.Trim();
     }
 }

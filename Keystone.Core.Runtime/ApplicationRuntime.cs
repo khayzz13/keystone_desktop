@@ -150,6 +150,7 @@ public class ApplicationRuntime : ICoreContext
         if (_config.Plugins.Enabled && Directory.Exists(pluginDir))
         {
             _loader = new DyLibLoader(pluginDir, _pluginRegistry);
+            _loader.AllowExternalSignatures = _config.Plugins.AllowExternalSignatures;
             _loader.CoreContext = this;
             _loader.LoadAll();
             if (_config.Plugins.HotReload)
@@ -160,6 +161,7 @@ public class ApplicationRuntime : ICoreContext
         if (_config.Plugins.Enabled && userPluginDir != null && Directory.Exists(userPluginDir))
         {
             _userLoader = new DyLibLoader(userPluginDir, _pluginRegistry);
+            _userLoader.AllowExternalSignatures = _config.Plugins.AllowExternalSignatures;
             _userLoader.CoreContext = this;
             _userLoader.LoadAll();
             if (_config.Plugins.HotReload)
@@ -171,6 +173,7 @@ public class ApplicationRuntime : ICoreContext
         if (_config.Plugins.Enabled && extensionPluginDir != null && Directory.Exists(extensionPluginDir))
         {
             _extensionLoader = new DyLibLoader(extensionPluginDir, _pluginRegistry);
+            _extensionLoader.AllowExternalSignatures = _config.Plugins.AllowExternalSignatures;
             _extensionLoader.CoreContext = this;
             _extensionLoader.LoadAll();
             if (_config.Plugins.HotReload)

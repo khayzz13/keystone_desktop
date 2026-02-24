@@ -1,6 +1,6 @@
 # Plugin System
 
-Hot-reloadable C# DLLs dropped into your app's `dylib/` directory. The runtime watches this directory and reloads changed assemblies without restarting the process — each plugin runs in its own collectible `AssemblyLoadContext` so the old code is fully unloaded before the new version takes over.
+Hot-reloadable C# DLLs loaded from configured plugin directories. The runtime watches those directories and reloads changed assemblies without restarting the process — each plugin runs in its own collectible `AssemblyLoadContext` so the old code is fully unloaded before the new version takes over.
 
 There are five plugin types. Each interface serves a distinct purpose.
 
@@ -16,7 +16,38 @@ There are five plugin types. Each interface serves a distinct purpose.
 | `ILibraryPlugin` | Shared code, utilities, and infrastructure reused by other plugins | Any |
 | `IWindowPlugin` | Full native windows with Metal/Skia rendering | Window render thread |
 
-All five are discovered automatically when their DLL lands in `dylib/`. No registration in `keystone.json` is needed beyond pointing `plugins.dir` at the right directory.
+All five are discovered automatically when their DLL appears in a configured plugin directory. No per-plugin registration in `keystone.json` is required.
+
+---
+
+## Plugin Directories and Validation
+
+Configure plugin locations under `plugins` in `keystone.json`:
+
+```jsonc
+{
+  "plugins": {
+    "dir": "dylib",
+    "userDir": "$APP_SUPPORT/plugins",
+    "extensionDir": "$APP_SUPPORT/extensions",
+    "allowExternalSignatures": false
+  }
+}
+```
+
+Load order is deterministic: `dir` -> `userDir` -> `extensionDir`.
+
+At load and hot-reload time, Keystone validates each plugin binary before unloading the old version:
+
+1. If the host app has a macOS `TeamIdentifier`, plugin signature checks are enforced.
+2. Plugin must pass `codesign --verify --strict`.
+3. Plugin must expose a `TeamIdentifier`.
+4. If `allowExternalSignatures = false`, plugin team must match the host team.
+5. If `allowExternalSignatures = true`, signed plugins from other teams are accepted.
+
+In ad-hoc/unsigned local dev builds (host has no `TeamIdentifier`), these checks are skipped.
+
+If validation fails, the new DLL is rejected and the previously loaded plugin remains active.
 
 ---
 

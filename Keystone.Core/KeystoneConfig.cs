@@ -115,9 +115,101 @@ public class KeystoneConfig
     private static void Validate(KeystoneConfig config, string path)
     {
         if (string.IsNullOrWhiteSpace(config.Name))
-            throw new InvalidOperationException($"Config: 'name' is required ({path})");
+            ThrowInvalid(path, "'name' is required");
         if (string.IsNullOrWhiteSpace(config.Id))
-            throw new InvalidOperationException($"Config: 'id' is required ({path})");
+            ThrowInvalid(path, "'id' is required");
+
+        if (config.Plugins.Enabled && string.IsNullOrWhiteSpace(config.Plugins.Dir))
+            ThrowInvalid(path, "'plugins.dir' is required when plugins are enabled");
+        if (config.Plugins.DebounceMs < 0)
+            ThrowInvalid(path, "'plugins.debounceMs' must be >= 0");
+
+        if (config.Scripts.Enabled && string.IsNullOrWhiteSpace(config.Scripts.Dir))
+            ThrowInvalid(path, "'scripts.dir' is required when scripts are enabled");
+
+        if (config.Bun is { Enabled: true } bun && string.IsNullOrWhiteSpace(bun.Root))
+            ThrowInvalid(path, "'bun.root' is required when bun is enabled");
+
+        ValidateProcessRecovery(config.ProcessRecovery, path);
+        ValidateWindows(config.Windows, path);
+        ValidateWorkers(config.Workers, path);
+    }
+
+    private static void ValidateProcessRecovery(ProcessRecoveryConfig cfg, string path)
+    {
+        if (cfg.BunMaxRestarts < 0)
+            ThrowInvalid(path, "'processRecovery.bunMaxRestarts' must be >= 0");
+        if (cfg.BunRestartBaseDelayMs < 0)
+            ThrowInvalid(path, "'processRecovery.bunRestartBaseDelayMs' must be >= 0");
+        if (cfg.BunRestartMaxDelayMs < 0)
+            ThrowInvalid(path, "'processRecovery.bunRestartMaxDelayMs' must be >= 0");
+        if (cfg.BunRestartMaxDelayMs < cfg.BunRestartBaseDelayMs)
+            ThrowInvalid(path, "'processRecovery.bunRestartMaxDelayMs' must be >= bunRestartBaseDelayMs");
+        if (cfg.WebViewReloadDelayMs < 0)
+            ThrowInvalid(path, "'processRecovery.webViewReloadDelayMs' must be >= 0");
+    }
+
+    private static void ValidateWindows(List<WindowConfig> windows, string path)
+    {
+        for (var i = 0; i < windows.Count; i++)
+        {
+            var window = windows[i];
+            var prefix = $"windows[{i}]";
+
+            if (string.IsNullOrWhiteSpace(window.Component))
+                ThrowInvalid(path, $"'{prefix}.component' is required");
+            if (window.Width <= 0)
+                ThrowInvalid(path, $"'{prefix}.width' must be > 0");
+            if (window.Height <= 0)
+                ThrowInvalid(path, $"'{prefix}.height' must be > 0");
+
+            if (!new[] { "hidden", "toolkit", "none" }.Contains(window.TitleBarStyle, StringComparer.OrdinalIgnoreCase))
+                ThrowInvalid(path, $"'{prefix}.titleBarStyle' must be one of: hidden, toolkit, none");
+
+            if (window.Toolbar?.Items == null) continue;
+            for (var j = 0; j < window.Toolbar.Items.Count; j++)
+            {
+                var item = window.Toolbar.Items[j];
+                if (string.IsNullOrWhiteSpace(item.Label) &&
+                    string.IsNullOrWhiteSpace(item.Action) &&
+                    string.IsNullOrWhiteSpace(item.Icon) &&
+                    string.IsNullOrWhiteSpace(item.Type))
+                {
+                    ThrowInvalid(path, $"'{prefix}.toolbar.items[{j}]' must define at least one field");
+                }
+            }
+        }
+    }
+
+    private static void ValidateWorkers(List<BunWorkerConfig>? workers, string path)
+    {
+        if (workers == null || workers.Count == 0) return;
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < workers.Count; i++)
+        {
+            var worker = workers[i];
+            var prefix = $"workers[{i}]";
+
+            if (string.IsNullOrWhiteSpace(worker.Name))
+                ThrowInvalid(path, $"'{prefix}.name' is required");
+            if (!names.Add(worker.Name))
+                ThrowInvalid(path, $"duplicate worker name '{worker.Name}'");
+
+            if (string.IsNullOrWhiteSpace(worker.ServicesDir))
+                ThrowInvalid(path, $"'{prefix}.servicesDir' is required");
+            if (worker.MaxRestarts < 0)
+                ThrowInvalid(path, $"'{prefix}.maxRestarts' must be >= 0");
+            if (worker.BaseBackoffMs < 0)
+                ThrowInvalid(path, $"'{prefix}.baseBackoffMs' must be >= 0");
+            if (worker.IsExtensionHost && worker.AllowedChannels is { Count: 0 })
+                ThrowInvalid(path, $"'{prefix}.allowedChannels' cannot be empty when isExtensionHost=true");
+        }
+    }
+
+    private static void ThrowInvalid(string path, string message)
+    {
+        throw new InvalidOperationException($"Config: {message} ({path})");
     }
 
     private static readonly JsonSerializerOptions _jsonOptions = new()

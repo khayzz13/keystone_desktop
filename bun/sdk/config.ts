@@ -110,7 +110,7 @@ export function defineConfig(config: KeystoneRuntimeConfig): KeystoneRuntimeConf
 
 /** Merge user config with defaults. Used internally by host.ts. */
 export function resolveConfig(user: KeystoneRuntimeConfig): ResolvedConfig {
-  return {
+  const resolved: ResolvedConfig = {
     services: { ...defaults.services, ...user.services },
     web: { ...defaults.web, ...user.web, components: { ...defaults.web.components, ...user.web?.components } },
     http: { ...defaults.http, ...user.http },
@@ -118,4 +118,28 @@ export function resolveConfig(user: KeystoneRuntimeConfig): ResolvedConfig {
     health: { ...defaults.health, ...user.health },
     security: { ...defaults.security, ...user.security },
   };
+
+  validateResolvedConfig(resolved);
+  return resolved;
+}
+
+function validateResolvedConfig(config: ResolvedConfig): void {
+  if (!config.services.dir.trim()) throw new Error("services.dir must be a non-empty string");
+  if (!config.web.dir.trim()) throw new Error("web.dir must be a non-empty string");
+  if (!config.http.hostname.trim()) throw new Error("http.hostname must be a non-empty string");
+  if (config.watch.debounceMs < 0) throw new Error("watch.debounceMs must be >= 0");
+  if (config.health.intervalMs <= 0) throw new Error("health.intervalMs must be > 0");
+
+  if (!["auto", "open", "allowlist"].includes(config.security.mode))
+    throw new Error("security.mode must be one of: auto, open, allowlist");
+  if (!(config.security.allowEval === "auto" || typeof config.security.allowEval === "boolean"))
+    throw new Error("security.allowEval must be 'auto' or boolean");
+
+  if (!Array.isArray(config.security.allowedActions))
+    throw new Error("security.allowedActions must be an array");
+
+  for (const [idx, action] of config.security.allowedActions.entries()) {
+    if (typeof action !== "string" || action.trim().length === 0)
+      throw new Error(`security.allowedActions[${idx}] must be a non-empty string`);
+  }
 }

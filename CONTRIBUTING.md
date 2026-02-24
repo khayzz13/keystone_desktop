@@ -25,6 +25,14 @@ Right now I'm the only person working on this, and I'm looking for contributors.
   3a. you can also reach me on discord  
 4. Submit a PR when ready
 
+## Pre-PR Checks
+
+Run local checks before opening a PR:
+
+```bash
+./tools/preflight.sh
+```
+
 ## Current Build From Source Requirements
 
 - .NET 10 SDK

@@ -4,16 +4,16 @@ Keystone uses two configuration files with different responsibilities:
 
 | File | Scope | Read by |
 |------|-------|---------|
-| `keystone.json` | App identity, windows, plugins, C# runtime | C# host process |
+| `keystone.config.json` (fallback: `keystone.json`) | App identity, windows, plugins, C# runtime | C# host process |
 | `bun/keystone.config.ts` | Bun runtime: services, bundling, HMR, security | Bun subprocess |
 
 Both are optional — the runtime has sensible defaults for everything.
 
 ---
 
-## `keystone.json`
+## `keystone.config.json` / `keystone.json`
 
-Lives at the root of your app directory. Controls the C# host process.
+Lives at the root of your app directory. The host searches `keystone.config.json` first, then `keystone.json`.
 
 ### Full schema
 
@@ -51,10 +51,11 @@ Lives at the root of your app directory. Controls the C# host process.
   "plugins": {
     "enabled": true,
     "dir": "dylib",           // bundled plugin directory (relative to keystone.json)
-    "userDir": "",            // external plugin directory — side-by-side or installer layout
+    "userDir": "",            // publisher-managed external plugin directory
+    "extensionDir": "",       // community/third-party plugin directory
     "hotReload": true,
     "debounceMs": 200,
-    "allowExternalSignatures": false  // allow plugins not signed by this app developer
+    "allowExternalSignatures": false  // allow signed plugins from other teams
   },
 
   // C# script files (.csx)
@@ -97,6 +98,21 @@ Lives at the root of your app directory. Controls the C# host process.
   }
 }
 ```
+
+### Startup Validation (`keystone.json` / `keystone.config.json`)
+
+The host validates config at startup and fails fast on invalid input. Errors include the config path.
+
+| Area | Rule |
+|------|------|
+| Identity | `name` and `id` are required (non-empty) |
+| Plugins | `plugins.dir` required when `plugins.enabled = true`; `plugins.debounceMs >= 0` |
+| Scripts | `scripts.dir` required when `scripts.enabled = true` |
+| Bun | `bun.root` required when `bun.enabled = true` |
+| Process recovery | `bunMaxRestarts >= 0`; `bunRestartBaseDelayMs >= 0`; `bunRestartMaxDelayMs >= bunRestartBaseDelayMs`; `webViewReloadDelayMs >= 0` |
+| Windows | each `windows[i].component` required; `width > 0`; `height > 0`; `titleBarStyle` must be `hidden`, `toolkit`, or `none` |
+| Toolbar items | if present, each item must define at least one of: `label`, `action`, `icon`, `type` |
+| Workers | each worker needs non-empty `name` and `servicesDir`; worker names must be unique (case-insensitive); `maxRestarts >= 0`; `baseBackoffMs >= 0`; if `isExtensionHost = true`, `allowedChannels` cannot be an empty list |
 
 ### `windows[]`
 
@@ -153,28 +169,46 @@ When `enabled: false` or the `bun` block is absent, no Bun process is started. A
 
 ### `plugins`
 
-Hot-reloadable C# DLLs dropped into `dylib/`. The runtime watches this directory with a file system watcher.
+Hot-reloadable C# DLLs can be loaded from up to three directories: bundled (`dir`), publisher-managed (`userDir`), and community/third-party (`extensionDir`).
 
 ```jsonc
 {
   "plugins": {
     "enabled": true,
     "dir": "dylib",                    // bundled plugin dir, relative to keystone.json
-    "userDir": "~/Library/...",        // external dir — supports ~/, $APP_SUPPORT, absolute, or relative paths
+    "userDir": "$APP_SUPPORT/plugins", // publisher-managed dir
+    "extensionDir": "$APP_SUPPORT/extensions", // community/third-party dir
     "hotReload": true,                 // watch for changes and reload automatically
     "debounceMs": 200,                 // wait 200ms after last change before reloading
-    "allowExternalSignatures": false   // when true, disables library validation for third-party plugins
+    "allowExternalSignatures": false   // when true, signed plugins from other teams are allowed
   }
 }
 ```
 
-`dir` and `userDir` are both optional and can coexist. `dir` is for plugins bundled inside the `.app`; `userDir` is for plugins that live outside the bundle — useful for dev (side-by-side dylib/) and installer layouts where plugins are user-managed.
+The runtime loads directories in order: `dir` -> `userDir` -> `extensionDir`.
 
-`userDir` path resolution:
+- `dir`: bundled plugins in the app layout
+- `userDir`: publisher-managed plugins outside the bundle
+- `extensionDir`: community/third-party extensions outside the bundle
+
+`userDir` and `extensionDir` path resolution:
 - `~/...` — expands to home directory
 - `$APP_SUPPORT/...` — expands to `~/Library/Application Support/<AppName>/...`
 - Absolute path — used as-is
 - Relative path — resolved against the app root (`keystone.json` directory)
+
+#### Runtime Plugin Validation
+
+When the host binary has a macOS `TeamIdentifier` (signed distribution build), every plugin load/reload is validated before the old version is unloaded:
+
+1. `codesign --verify --strict` must pass for the plugin DLL
+2. Plugin must include a `TeamIdentifier`
+3. If `allowExternalSignatures = false`, plugin team must match the host app team
+4. If `allowExternalSignatures = true`, other teams are allowed, but signatures are still required
+
+If validation fails, the plugin is rejected and the existing loaded version stays active.
+
+In local dev/ad-hoc host builds (no host `TeamIdentifier`), these team/signature checks are skipped.
 
 See [Plugin System](./plugin-system.md) for how to author hot-reloadable service, logic, library, and window plugins.
 
@@ -363,6 +397,21 @@ Apps can inspect the effective runtime policy at any time:
 const security = await query("security");
 // { mode, allowEval, usingDefaultActionRules, allowedActions, preBuiltWeb }
 ```
+
+### Bun Config Validation (`bun/keystone.config.ts`)
+
+`defineConfig()` defaults are validated when Bun resolves config:
+
+| Field | Constraint |
+|-------|------------|
+| `services.dir` | non-empty string |
+| `web.dir` | non-empty string |
+| `http.hostname` | non-empty string |
+| `watch.debounceMs` | `>= 0` |
+| `health.intervalMs` | `> 0` |
+| `security.mode` | `auto`, `open`, or `allowlist` |
+| `security.allowEval` | `auto` or boolean |
+| `security.allowedActions` | array of non-empty strings |
 
 ---
 
