@@ -3,8 +3,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text.Json;
-using AppKit;
-using CoreGraphics;
+using AppKit; // ProcessEvents — NSApplication.NextEvent, NSEvent types
 using Keystone.Core;
 using Keystone.Core.Management;
 using Keystone.Core.Platform;
@@ -29,7 +28,7 @@ public class WindowManager : IDisposable
     // Dependencies
     private readonly ActionRouter _actionRouter;
     private readonly Stopwatch _stopwatch = new();
-    private readonly NSApplication _nsApp;
+    private readonly IPlatform _platform;
 
     // Bind mode state
     private bool _bindModeActive;
@@ -42,7 +41,7 @@ public class WindowManager : IDisposable
     // Spawn callback for ApplicationRuntime to hook into
     public Action<string>? OnSpawnWindow;
     // Spawn at position callback
-    public Func<string, (NSWindow nsWindow, ManagedWindow managed)?>? OnSpawnWindowAt;
+    public Func<string, (INativeWindow nativeWindow, ManagedWindow managed)?>? OnSpawnWindowAt;
     public bool BindModeActive => _bindModeActive;
 
     // Workspace/layout state
@@ -91,10 +90,10 @@ public class WindowManager : IDisposable
         }
     }
 
-    public WindowManager()
+    public WindowManager(IPlatform platform)
     {
         _actionRouter = new ActionRouter(this);
-        _nsApp = NSApplication.SharedApplication;
+        _platform = platform;
         _stopwatch.Start();
     }
 
@@ -158,7 +157,7 @@ public class WindowManager : IDisposable
 
     public ManagedWindow CreateWindow(string id, IWindowPlugin plugin)
     {
-        var window = new ManagedWindow(id, plugin, _actionRouter)
+        var window = new ManagedWindow(id, plugin, _actionRouter, _platform)
         {
             GetBindModeActive = () => _bindModeActive,
             GetIsSelectedForBind = wid => _bindSelectedWindowIds.Contains(wid),
@@ -172,19 +171,19 @@ public class WindowManager : IDisposable
 
     public void RegisterWindow(ManagedWindow window)
     {
-        if (window.NSWindowHandle != IntPtr.Zero)
-            _windows[window.NSWindowHandle] = window;
+        if (window.Handle != IntPtr.Zero)
+            _windows[window.Handle] = window;
         _windowsById[window.Id] = window;
     }
 
-    public void UpdateWindowHandle(ManagedWindow window, NSWindow nsWindow)
+    public void UpdateWindowHandle(ManagedWindow window, INativeWindow nativeWindow)
     {
-        var oldHandle = window.NSWindowHandle;
+        var oldHandle = window.Handle;
         if (oldHandle != IntPtr.Zero && _windows.ContainsKey(oldHandle))
             _windows.Remove(oldHandle);
 
-        if (nsWindow.Handle != IntPtr.Zero)
-            _windows[nsWindow.Handle] = window;
+        if (nativeWindow.Handle != IntPtr.Zero)
+            _windows[nativeWindow.Handle] = window;
     }
 
     public void UnregisterWindow(string windowId)
@@ -206,7 +205,7 @@ public class WindowManager : IDisposable
         }
 
         StateManager.Instance.RemoveWindowState(windowId);
-        _windows.Remove(window.NSWindowHandle);
+        _windows.Remove(window.Handle);
         _windowsById.Remove(windowId);
         window.Dispose();
     }
@@ -219,16 +218,17 @@ public class WindowManager : IDisposable
 
     public IEnumerable<ManagedWindow> GetAllWindows() => _windowsById.Values;
 
-    // === Event Processing ===
+    // === Event Processing (macOS event loop — port for other platforms) ===
 
     public void ProcessEvents()
     {
+        var nsApp = NSApplication.SharedApplication;
         while (true)
         {
-            var evt = _nsApp.NextEvent(NSEventMask.AnyEvent, null, NSRunLoopMode.Default, true);
+            var evt = nsApp.NextEvent(NSEventMask.AnyEvent, null, NSRunLoopMode.Default, true);
             if (evt == null) break;
 
-            _nsApp.SendEvent(evt);
+            nsApp.SendEvent(evt);
             RouteInputEvent(evt);
         }
     }
@@ -336,12 +336,12 @@ public class WindowManager : IDisposable
         if (_activeTabDrag != null)
         {
             UpdateTabDragOverlayPosition();
-            if (!NativeAppKit.IsMouseButtonDown())
+            if (!_platform.IsMouseButtonDown())
                 CompleteTabDrag();
             return;
         }
 
-        if (_draggingWindowId != null && !NativeAppKit.IsMouseButtonDown())
+        if (_draggingWindowId != null && !_platform.IsMouseButtonDown())
             CheckTabMergeOnDragEnd();
     }
 
@@ -365,7 +365,7 @@ public class WindowManager : IDisposable
     public void StartDrag(string windowId)
     {
         if (_windowsById.TryGetValue(windowId, out var window) && window.NativeWindow != null)
-            NativeAppKit.StartDrag(window.NativeWindow);
+            window.NativeWindow.StartDrag();
     }
 
     public void ToggleMenu(string windowId, string menuName)
@@ -416,16 +416,16 @@ public class WindowManager : IDisposable
 
         foreach (var w in windows)
         {
-            var frame = w!.NativeWindow!.Frame;
-            minX = Math.Min(minX, frame.X);
-            minY = Math.Min(minY, frame.Y);
-            maxX = Math.Max(maxX, frame.X + frame.Width);
-            maxY = Math.Max(maxY, frame.Y + frame.Height);
+            var (fx, fy, fw, fh) = w!.NativeWindow!.Frame;
+            minX = Math.Min(minX, fx);
+            minY = Math.Min(minY, fy);
+            maxX = Math.Max(maxX, fx + fw);
+            maxY = Math.Max(maxY, fy + fh);
         }
 
-        var firstFrame = windows[0]!.NativeWindow!.Frame;
-        var secondFrame = windows[1]!.NativeWindow!.Frame;
-        var isVertical = Math.Abs(firstFrame.Y - secondFrame.Y) > Math.Abs(firstFrame.X - secondFrame.X);
+        var (f1x, f1y, _, _) = windows[0]!.NativeWindow!.Frame;
+        var (f2x, f2y, _, _) = windows[1]!.NativeWindow!.Frame;
+        var isVertical = Math.Abs(f1y - f2y) > Math.Abs(f1x - f2x);
         var orientation = isVertical ? BindOrientation.Vertical : BindOrientation.Horizontal;
 
         var plugins = windows.Select(w => w!.GetPlugin()).Where(p => p != null).ToArray();
@@ -433,7 +433,7 @@ public class WindowManager : IDisposable
         if (plugins.Length < 2) return;
 
         foreach (var w in windows)
-            w!.NativeWindow!.OrderOut(null);
+            w!.NativeWindow!.Hide();
 
         var layout = new BindLayout(BindLayoutType.Split, orientation);
         CreateBindContainer(plugins!, layout, minX, minY, maxX - minX, maxY - minY);
@@ -451,17 +451,15 @@ public class WindowManager : IDisposable
     public void ShowOverlay(IOverlayContent content, double screenX, double screenY, double w, double h)
     {
         CloseOverlay();
-        var nsWindow = NativeAppKit.CreateOverlayWindow(screenX, screenY - h, w, h);
-        var nsView = nsWindow.ContentView!;
-        var metalLayer = NativeAppKit.MakeLayerBacked(nsView);
+        var wndConfig = new Platform.WindowConfig(screenX, screenY - h, w, h);
+        var nativeWindow = _platform.CreateOverlayWindow(wndConfig);
 
         var overlayId = $"overlay_{++_overlayCounter}";
         var adapter = new OverlayAdapter(content);
         var managed = CreateWindow(overlayId, adapter);
-        managed.OnCreated(nsWindow, nsView, metalLayer);
+        managed.OnCreated(nativeWindow);
         RegisterWindow(managed);
-        UpdateWindowHandle(managed, nsWindow);
-        nsWindow.MakeKeyAndOrderFront(null);
+        nativeWindow.Show();
         _activeOverlayId = overlayId;
     }
 
@@ -481,17 +479,15 @@ public class WindowManager : IDisposable
     {
         CloseTabDragOverlay();
 
-        var nsWindow = NativeAppKit.CreateOverlayWindow(x, y, w, h);
-        var nsView = nsWindow.ContentView!;
-        var metalLayer = NativeAppKit.MakeLayerBacked(nsView);
+        var wndConfig = new Platform.WindowConfig(x, y, w, h);
+        var nativeWindow = _platform.CreateOverlayWindow(wndConfig);
 
         var overlayId = $"tab_drag_overlay_{++_tabDragOverlayCounter}";
         var adapter = new OverlayAdapter(new TabDragOverlayContent(title));
         var managed = CreateWindow(overlayId, adapter);
-        managed.OnCreated(nsWindow, nsView, metalLayer);
+        managed.OnCreated(nativeWindow);
         RegisterWindow(managed);
-        UpdateWindowHandle(managed, nsWindow);
-        nsWindow.MakeKeyAndOrderFront(null);
+        nativeWindow.Show();
         _activeTabDragOverlayId = overlayId;
         return managed;
     }
@@ -521,12 +517,12 @@ public class WindowManager : IDisposable
             var plugin = window.GetPlugin();
             if (plugin.ExcludeFromWorkspace) continue;
 
-            var frame = window.NativeWindow.Frame;
+            var (fx, fy, fw, fh) = window.NativeWindow.Frame;
             snapshots.Add(new WindowSnapshotDto
             {
                 WindowType = window.WindowType,
-                X = frame.X, Y = frame.Y,
-                Width = frame.Width, Height = frame.Height,
+                X = fx, Y = fy,
+                Width = fw, Height = fh,
                 ConfigJson = plugin.SerializeConfig()
             });
         }
@@ -587,7 +583,7 @@ public class WindowManager : IDisposable
         {
             var result = OnSpawnWindowAt?.Invoke(snap.WindowType);
             if (result == null) continue;
-            NativeAppKit.SetWindowFrame(result.Value.nsWindow, snap.X, snap.Y, snap.Width, snap.Height);
+            result.Value.nativeWindow.SetFrame(snap.X, snap.Y, snap.Width, snap.Height);
 
             if (snap.ConfigJson != null)
                 result.Value.managed.GetPlugin().RestoreConfig(snap.ConfigJson);
@@ -677,13 +673,13 @@ public class WindowManager : IDisposable
     public void MinimizeWindow(string windowId)
     {
         if (_windowsById.TryGetValue(windowId, out var window) && window.NativeWindow != null)
-            window.NativeWindow.Miniaturize(null);
+            window.NativeWindow.Minimize();
     }
 
     public void MaximizeWindow(string windowId)
     {
         if (_windowsById.TryGetValue(windowId, out var window) && window.NativeWindow != null)
-            window.NativeWindow.Zoom(null);
+            window.NativeWindow.Zoom();
     }
 
     public void ToggleAlwaysOnTop(string windowId)
@@ -691,20 +687,22 @@ public class WindowManager : IDisposable
         if (_windowsById.TryGetValue(windowId, out var window) && window.NativeWindow != null)
         {
             window.AlwaysOnTop = !window.AlwaysOnTop;
-            NativeAppKit.SetWindowFloating(window.NativeWindow, window.AlwaysOnTop);
+            window.NativeWindow.SetFloating(window.AlwaysOnTop);
         }
     }
 
     public bool IsWindowAlwaysOnTop(string windowId) =>
         _windowsById.TryGetValue(windowId, out var w) && w.AlwaysOnTop;
 
-    public void QuitApp() => NativeAppKit.TerminateApp();
+    public void BringAllWindowsToFront() => _platform.BringAllWindowsToFront();
 
-    public IEnumerable<(string id, string title, NSWindow window)> GetWindowsForDockMenu()
+    public void QuitApp() => _platform.Quit();
+
+    public IEnumerable<(string id, string title)> GetWindowsForDockMenu()
     {
         foreach (var w in _windowsById.Values)
             if (w.NativeWindow != null)
-                yield return (w.Id, w.GetPlugin().WindowTitle, w.NativeWindow);
+                yield return (w.Id, w.GetPlugin().WindowTitle);
     }
 
     // === Bind Containers ===
@@ -742,18 +740,16 @@ public class WindowManager : IDisposable
 
         var managedWindow = CreateWindow(containerId, bindWindow);
 
-        var nsWindow = NativeAppKit.CreateBorderlessWindow(x, y, width, height);
-        var nsView = nsWindow.ContentView!;
-        var metalLayer = NativeAppKit.MakeLayerBacked(nsView);
+        var wndConfig = new Platform.WindowConfig(x, y, width, height);
+        var nativeWindow = _platform.CreateWindow(wndConfig);
 
-        managedWindow.OnCreated(nsWindow, nsView, metalLayer);
+        managedWindow.OnCreated(nativeWindow);
         RegisterWindow(managedWindow);
-        UpdateWindowHandle(managedWindow, nsWindow);
 
         container.HostWindow = managedWindow;
         _bindContainers[containerId] = container;
 
-        nsWindow.MakeKeyAndOrderFront(null);
+        nativeWindow.Show();
         return containerId;
     }
 
@@ -779,7 +775,7 @@ public class WindowManager : IDisposable
         if (container.HostWindow?.NativeWindow == null)
             return;
 
-        var frame = container.HostWindow.NativeWindow.Frame;
+        var (fx, fy, _, _) = container.HostWindow.NativeWindow.Frame;
 
         if (container.WindowCount <= 1)
         {
@@ -787,15 +783,13 @@ public class WindowManager : IDisposable
             if (lastPlugin != null)
             {
                 var (lw, lh) = lastPlugin.DefaultSize;
-                var lastWindow = NativeAppKit.CreateBorderlessWindow(frame.X, frame.Y, lw, lh);
-                var lastView = lastWindow.ContentView!;
-                var lastMetalLayer = NativeAppKit.MakeLayerBacked(lastView);
+                var lastConfig = new Platform.WindowConfig(fx, fy, lw, lh);
+                var lastNativeWindow = _platform.CreateWindow(lastConfig);
 
                 var lastManaged = CreateWindow($"popout_{++_windowCounter}", lastPlugin);
-                lastManaged.OnCreated(lastWindow, lastView, lastMetalLayer);
+                lastManaged.OnCreated(lastNativeWindow);
                 RegisterWindow(lastManaged);
-                UpdateWindowHandle(lastManaged, lastWindow);
-                lastWindow.MakeKeyAndOrderFront(null);
+                lastNativeWindow.Show();
             }
             DissolveBindContainer(containerId);
             Console.WriteLine($"[WindowManager] Dissolved {containerId} (last slot popped out)");
@@ -808,15 +802,13 @@ public class WindowManager : IDisposable
         Console.WriteLine($"[WindowManager] Popout slot {slotIndex} from {containerId} ({container.WindowCount} remaining)");
 
         var (w, h) = plugin.DefaultSize;
-        var nsWindow = NativeAppKit.CreateBorderlessWindow(frame.X + 50, frame.Y + 50, w, h);
-        var nsView = nsWindow.ContentView!;
-        var metalLayer = NativeAppKit.MakeLayerBacked(nsView);
+        var popoutConfig = new Platform.WindowConfig(fx + 50, fy + 50, w, h);
+        var nativeWindow = _platform.CreateWindow(popoutConfig);
 
         var managedWindow = CreateWindow($"popout_{++_windowCounter}", plugin);
-        managedWindow.OnCreated(nsWindow, nsView, metalLayer);
+        managedWindow.OnCreated(nativeWindow);
         RegisterWindow(managedWindow);
-        UpdateWindowHandle(managedWindow, nsWindow);
-        nsWindow.MakeKeyAndOrderFront(null);
+        nativeWindow.Show();
     }
 
     // === Tab Groups ===
@@ -835,7 +827,7 @@ public class WindowManager : IDisposable
             window.LayoutMode = WindowLayoutMode.TabGroup;
             window.GroupId = groupId;
             if (i > 0 && window.NativeWindow != null)
-                window.NativeWindow.OrderOut(null);
+                window.NativeWindow.Hide();
         }
 
         return groupId;
@@ -849,9 +841,9 @@ public class WindowManager : IDisposable
         group.SetActiveWindow(windowId);
 
         if (oldActiveId != null && _windowsById.TryGetValue(oldActiveId, out var oldWindow) && oldWindow.NativeWindow != null)
-            oldWindow.NativeWindow.OrderOut(null);
+            oldWindow.NativeWindow.Hide();
         if (_windowsById.TryGetValue(windowId, out var newWindow) && newWindow.NativeWindow != null)
-            newWindow.NativeWindow.MakeKeyAndOrderFront(null);
+            newWindow.NativeWindow.Show();
     }
 
     public void DissolveTabGroup(string groupId)
@@ -863,7 +855,7 @@ public class WindowManager : IDisposable
         {
             window.LayoutMode = WindowLayoutMode.Standalone;
             window.GroupId = null;
-            window.NativeWindow?.MakeKeyAndOrderFront(null);
+            window.NativeWindow?.Show();
         }
 
         _tabGroups.Remove(groupId);
@@ -917,9 +909,9 @@ public class WindowManager : IDisposable
 
         if (sourceWindow.NativeWindow != null && tabWindow.NativeWindow != null)
         {
-            var frame = sourceWindow.NativeWindow.Frame;
-            NativeAppKit.SetWindowFrame(tabWindow.NativeWindow, frame.X + 30, frame.Y - 30, frame.Width, frame.Height);
-            tabWindow.NativeWindow.MakeKeyAndOrderFront(null);
+            var (fx, fy, fw, fh) = sourceWindow.NativeWindow.Frame;
+            tabWindow.NativeWindow.SetFrame(fx + 30, fy - 30, fw, fh);
+            tabWindow.NativeWindow.Show();
         }
 
         if (group.WindowCount == 1)
@@ -961,33 +953,33 @@ public class WindowManager : IDisposable
                          _windowsById.TryGetValue(group.ActiveWindowId, out var activeWindow) &&
                          activeWindow.NativeWindow != null)
                 {
-                    activeWindow.NativeWindow.MakeKeyAndOrderFront(null);
+                    activeWindow.NativeWindow.Show();
                 }
             }
         }
 
-        var mousePos = NSEvent.CurrentMouseLocation;
-        var frame = tabWindow.NativeWindow.Frame;
-        double offsetX = dragOffsetX >= 0 ? dragOffsetX : frame.Width / 2;
+        var (mouseX, mouseY) = _platform.GetMouseLocation();
+        var (fx, fy, fw, fh) = tabWindow.NativeWindow.Frame;
+        double offsetX = dragOffsetX >= 0 ? dragOffsetX : fw / 2;
 
         // Browser-like preview: drag a small tab overlay, then place full window at release.
         var title = tabWindow.GetPlugin().WindowTitle;
         var previewWidth = Math.Clamp(120 + title.Length * 6.0, 140, 320);
         const double previewHeight = 34;
         var previewOffsetX = Math.Clamp(offsetX, 18, previewWidth - 18);
-        var preview = ShowTabDragOverlay(title, mousePos.X - previewOffsetX, mousePos.Y - 22, previewWidth, previewHeight);
+        var preview = ShowTabDragOverlay(title, mouseX - previewOffsetX, mouseY - 22, previewWidth, previewHeight);
 
         // Single-tab source keeps its full window in place until release.
         if (!singleTabSource)
-            tabWindow.NativeWindow.OrderOut(null);
+            tabWindow.NativeWindow.Hide();
 
         if (preview?.NativeWindow == null)
         {
             if (singleTabSource && originalGroupId != null && _tabGroups.ContainsKey(originalGroupId))
                 DissolveTabGroup(originalGroupId);
 
-            NativeAppKit.SetWindowFrame(tabWindow.NativeWindow, mousePos.X - offsetX, mousePos.Y - 22, frame.Width, frame.Height);
-            tabWindow.NativeWindow.MakeKeyAndOrderFront(null);
+            tabWindow.NativeWindow.SetFrame(mouseX - offsetX, mouseY - 22, fw, fh);
+            tabWindow.NativeWindow.Show();
             _draggingWindowId = tabId;
             CheckTabMergeOnDragEnd();
             return;
@@ -1000,8 +992,8 @@ public class WindowManager : IDisposable
             singleTabSource,
             offsetX,
             previewOffsetX,
-            frame.Width,
-            frame.Height);
+            fw,
+            fh);
         UpdateTabDragOverlayPosition();
     }
 
@@ -1012,9 +1004,9 @@ public class WindowManager : IDisposable
         if (!_windowsById.TryGetValue(_activeTabDragOverlayId, out var overlay)) return;
         if (overlay.NativeWindow == null) return;
 
-        var mousePos = NSEvent.CurrentMouseLocation;
-        var overlayFrame = overlay.NativeWindow.Frame;
-        NativeAppKit.SetWindowFrame(overlay.NativeWindow, mousePos.X - _activeTabDrag.PreviewOffsetX, mousePos.Y - 22, overlayFrame.Width, overlayFrame.Height);
+        var (mouseX, mouseY) = _platform.GetMouseLocation();
+        var (_, _, ow, oh) = overlay.NativeWindow.Frame;
+        overlay.NativeWindow.SetFrame(mouseX - _activeTabDrag.PreviewOffsetX, mouseY - 22, ow, oh);
     }
 
     private void CompleteTabDrag()
@@ -1023,7 +1015,7 @@ public class WindowManager : IDisposable
 
         var drag = _activeTabDrag;
         _activeTabDrag = null;
-        var releasePos = NSEvent.CurrentMouseLocation;
+        var (releaseX, releaseY) = _platform.GetMouseLocation();
 
         CloseTabDragOverlay();
 
@@ -1033,13 +1025,12 @@ public class WindowManager : IDisposable
         if (drag.SingleTabSource && drag.OriginalGroupId != null && _tabGroups.ContainsKey(drag.OriginalGroupId))
             DissolveTabGroup(drag.OriginalGroupId);
 
-        NativeAppKit.SetWindowFrame(
-            drag.TabWindow.NativeWindow,
-            releasePos.X - drag.OffsetX,
-            releasePos.Y - 22,
+        drag.TabWindow.NativeWindow.SetFrame(
+            releaseX - drag.OffsetX,
+            releaseY - 22,
             drag.WindowWidth,
             drag.WindowHeight);
-        drag.TabWindow.NativeWindow.MakeKeyAndOrderFront(null);
+        drag.TabWindow.NativeWindow.Show();
 
         _draggingWindowId = drag.TabId;
         CheckTabMergeOnDragEnd();
@@ -1054,9 +1045,9 @@ public class WindowManager : IDisposable
         if (!_windowsById.TryGetValue(draggedId, out var draggedWindow)) return;
         if (draggedWindow.NativeWindow == null) return;
 
-        var frame = draggedWindow.NativeWindow.Frame;
-        var titleBarY = frame.Y + frame.Height - 22;
-        var centerX = frame.X + frame.Width / 2;
+        var (fx, fy, fw, fh) = draggedWindow.NativeWindow.Frame;
+        var titleBarY = fy + fh - 22;
+        var centerX = fx + fw / 2;
 
         foreach (var (id, window) in _windowsById)
         {
@@ -1065,11 +1056,11 @@ public class WindowManager : IDisposable
             if (window.GroupId != null && window.GroupId == draggedWindow.GroupId) continue;
             if (window.NativeWindow == null) continue;
 
-            var targetFrame = window.NativeWindow.Frame;
-            var targetTitleTop = targetFrame.Y + targetFrame.Height;
+            var (tx, ty, tw, th) = window.NativeWindow.Frame;
+            var targetTitleTop = ty + th;
             var targetTitleBottom = targetTitleTop - 44;
 
-            if (centerX >= targetFrame.X && centerX <= targetFrame.X + targetFrame.Width &&
+            if (centerX >= tx && centerX <= tx + tw &&
                 titleBarY >= targetTitleBottom && titleBarY <= targetTitleTop)
             {
                 MergeIntoTabGroup(id, draggedId);
@@ -1098,12 +1089,12 @@ public class WindowManager : IDisposable
             existingGroup.AddWindow(windowToMerge);
             windowToMerge.LayoutMode = WindowLayoutMode.TabGroup;
             windowToMerge.GroupId = targetWindow.GroupId;
-            windowToMerge.NativeWindow?.OrderOut(null);
+            windowToMerge.NativeWindow?.Hide();
         }
         else
         {
             CreateTabGroup(new[] { targetWindowId, windowToMergeId });
-            windowToMerge.NativeWindow?.OrderOut(null);
+            windowToMerge.NativeWindow?.Hide();
         }
 
         Console.WriteLine($"[WindowManager] Merged {windowToMergeId} into {targetWindowId}'s tab group");

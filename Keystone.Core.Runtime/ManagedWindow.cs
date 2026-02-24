@@ -1,14 +1,11 @@
-using AppKit;
 using CoreAnimation;
 using CoreGraphics;
-using Foundation;
-using ObjCRuntime;
-using WebKit;
 using Keystone.Core;
 using Keystone.Core.Graphics.Skia;
 using Keystone.Core.Management;
 using Keystone.Core.Management.Bun;
 using Keystone.Core.Platform;
+using Keystone.Core.Platform.MacOS;
 using Keystone.Core.Plugins;
 using Keystone.Core.Rendering;
 
@@ -26,15 +23,14 @@ public class ManagedWindow : IDisposable
     private volatile IWindowPlugin _plugin;
     private readonly object _pluginLock = new();
     private readonly ActionRouter _actionRouter;
+    private readonly IPlatform _platform;
     private readonly FrameState _frameState;
     private readonly uint _windowId;
     private volatile bool _pendingReload;
 
-    private NSWindow? _nsWindow;
-    private NSView? _nsView;
-    private CAMetalLayer? _metalLayer;
+    private INativeWindow? _nativeWindow;
+    private CAMetalLayer? _metalLayer; // GPU path — macOS/Metal specific
     private SkiaPaintCache? _paintCache;
-    private KeystoneWindowDelegate? _windowDelegate;
 
     // Per-window render thread + GPU context
     private WindowRenderThread? _renderThread;
@@ -49,10 +45,8 @@ public class ManagedWindow : IDisposable
     private volatile bool _purgeAfterResize;
     private bool _disposed;
 
-    // Shared host WebView — single WKWebView per window for all Bun component slots
-    private WKWebView? _hostWebView;
-    private KeystoneMessageHandler? _messageHandler;
-    private KeystoneWebViewDelegate? _webViewDelegate;
+    // Shared host WebView — single IWebView per window for all Bun component slots
+    private IWebView? _hostWebView;
     private bool _hostCreating; // guard against double-creation from render thread
     private bool _hostReady;
     private Dictionary<string, (float x, float y, float w, float h)>? _hostSlots;
@@ -134,10 +128,8 @@ public class ManagedWindow : IDisposable
     public Action? OnWebViewCrash { get; set; }
 
     // Dedicated WebViews for external URLs (one per unique URL key)
-    private Dictionary<string, WKWebView>? _externalWebViews;
+    private Dictionary<string, IWebView>? _externalWebViews;
     private Dictionary<string, (float x, float y, float w, float h)>? _externalRects;
-
-    private static WKProcessPool? _sharedPool;
 
     // Expose for event coordinate transform
     public float ScaleFactor => _scale;
@@ -151,8 +143,8 @@ public class ManagedWindow : IDisposable
     // Identity
     public string Id { get; }
     public string WindowType { get; }
-    public IntPtr NSWindowHandle => _nsWindow?.Handle ?? IntPtr.Zero;
-    public NSWindow? NativeWindow => _nsWindow;
+    public IntPtr Handle => _nativeWindow?.Handle ?? IntPtr.Zero;
+    public INativeWindow? NativeWindow => _nativeWindow;
 
     public IWindowPlugin GetPlugin() { lock (_pluginLock) return _plugin; }
     public object? GetGpuContext() => _renderThread?.Gpu;
@@ -215,10 +207,11 @@ public class ManagedWindow : IDisposable
     public Func<string, bool>? GetIsSelectedForBind { get; set; }
     public Func<string, (string[] ids, string[] titles, string activeId)?> GetTabGroupInfo { get; set; }
 
-    public ManagedWindow(string id, IWindowPlugin plugin, ActionRouter actionRouter)
+    public ManagedWindow(string id, IWindowPlugin plugin, ActionRouter actionRouter, IPlatform platform)
     {
         Id = id;
         _plugin = plugin;
+        _platform = platform;
         WindowType = plugin.WindowType;
         _actionRouter = actionRouter;
         _windowId = _nextWindowId++;
@@ -228,52 +221,39 @@ public class ManagedWindow : IDisposable
             wpb.WindowId = _windowId;
             wpb.ShowOverlay = (content, w, h) =>
             {
-                if (_nsWindow == null) return;
-                var frame = _nsWindow.Frame;
-                var screenX = frame.X + OverlayAnchorX / _scale;
-                var screenY = frame.Y;
+                if (_nativeWindow == null) return;
+                var (fx, fy, fw, fh) = _nativeWindow.Frame;
+                var screenX = fx + OverlayAnchorX / _scale;
+                var screenY = fy;
                 OnShowOverlay?.Invoke(content, screenX, screenY, w, h);
             };
             wpb.CloseOverlay = () => OnCloseOverlay?.Invoke();
         }
     }
 
-    public void OnCreated(NSWindow nsWindow, NSView nsView, CAMetalLayer metalLayer)
+    public void OnCreated(INativeWindow nativeWindow)
     {
-        _nsWindow = nsWindow;
-        _nsView = nsView;
-        _metalLayer = metalLayer;
+        _nativeWindow = nativeWindow;
 
         UpdateSize();
 
-        // Configure metal layer with shared device
-        NativeAppKit.ConfigureMetalLayer(_metalLayer, SkiaWindow.Shared.Device, _scale);
+        // GPU path — macOS/Metal specific. Port for other platforms.
+        if (nativeWindow.GetGpuSurface() is CAMetalLayer metalLayer)
+        {
+            _metalLayer = metalLayer;
+            MacOSPlatform.ConfigureMetalLayer(metalLayer, SkiaWindow.Shared.Device, _scale);
 
-        _paintCache = new SkiaPaintCache();
+            _paintCache = new SkiaPaintCache();
 
-        // Create per-window GPU context + subscribe to VSync + create render thread
-        var gpu = SkiaWindow.CreateWindowContext();
-        var displayLink = ApplicationRuntime.Instance!.DisplayLink;
-        _vsyncSignal = displayLink.Subscribe();
-        _renderThread = new WindowRenderThread(this, gpu, _vsyncSignal);
+            // Create per-window GPU context + subscribe to VSync + create render thread
+            var gpu = SkiaWindow.CreateWindowContext();
+            var displayLink = ApplicationRuntime.Instance!.DisplayLink;
+            _vsyncSignal = displayLink.Subscribe();
+            _renderThread = new WindowRenderThread(this, gpu, _vsyncSignal);
+        }
 
         // Set up window delegate for live resize
-        // Render thread keeps running — just update size and request redraw
-        _windowDelegate = new KeystoneWindowDelegate
-        {
-            OnResizeStart = () => { _isLiveResizing = true; },
-            OnResize = () => {
-                UpdateSize();
-                RequestRedraw();
-            },
-            OnResizeEnd = () => {
-                _isLiveResizing = false;
-                _purgeAfterResize = true;
-                RefreshMousePosition();
-                RequestRedraw();
-            }
-        };
-        _nsWindow.WeakDelegate = _windowDelegate;
+        _nativeWindow.SetDelegate(new NativeWindowDelegate(this));
 
         // Subscribe to data channels — RequestRedraw wakes the render thread when data arrives
         var deps = _plugin.Dependencies;
@@ -284,28 +264,23 @@ public class ManagedWindow : IDisposable
         }
 
         // Start render thread
-        _renderThread.Start();
+        _renderThread?.Start();
 
         Console.WriteLine($"[ManagedWindow] Created {WindowType} id={Id} size={_width}x{_height} scale={_scale}");
     }
 
     /// <summary>
-    /// Read size from AppKit (main thread only) and update cached fields.
-    /// Render thread skips AppKit reads — uses cached values from last main-thread update.
+    /// Read size from platform (main thread only) and update cached fields.
+    /// Render thread skips platform reads — uses cached values from last main-thread update.
     /// </summary>
     private void UpdateSize()
     {
-        if (_nsWindow == null || _nsView == null) return;
+        if (_nativeWindow == null) return;
 
-        if (Foundation.NSThread.IsMain)
-        {
-            _scale = (float)_nsWindow.BackingScaleFactor;
-            var bounds = _nsView.Bounds;
-            _width = (uint)(bounds.Width * _scale);
-            _height = (uint)(bounds.Height * _scale);
-            // DrawableSize is set by the render thread in RenderOnThread —
-            // setting it here on every resize event causes IOSurface spam
-        }
+        _scale = (float)_nativeWindow.ScaleFactor;
+        var (bw, bh) = _nativeWindow.ContentBounds;
+        _width = (uint)(bw * _scale);
+        _height = (uint)(bh * _scale);
 
         _frameState.Width = _width;
         _frameState.Height = _height;
@@ -357,7 +332,7 @@ public class ManagedWindow : IDisposable
         // DrawableSize only updates when resize ENDS (single allocation).
         if (!_isLiveResizing && (_width != _lastDrawW || _height != _lastDrawH))
         {
-            _metalLayer.DrawableSize = new CoreGraphics.CGSize(_width, _height);
+            _metalLayer.DrawableSize = new CGSize(_width, _height);
             _lastDrawW = _width;
             _lastDrawH = _height;
         }
@@ -465,9 +440,9 @@ public class ManagedWindow : IDisposable
 
     private void RefreshMousePosition()
     {
-        if (_nsWindow == null) return;
-        var pos = _nsWindow.MouseLocationOutsideOfEventStream;
-        var (px, py) = TransformMouse(pos.X, pos.Y);
+        if (_nativeWindow == null) return;
+        var (posX, posY) = _nativeWindow.MouseLocationInWindow;
+        var (px, py) = TransformMouse(posX, posY);
         MouseX = px;
         MouseY = py;
         _frameState.MouseX = MouseX;
@@ -562,7 +537,7 @@ public class ManagedWindow : IDisposable
         if (newCursor != _currentCursor)
         {
             _currentCursor = newCursor;
-            NativeAppKit.SetCursor(newCursor);
+            _platform.SetCursor(newCursor);
         }
     }
 
@@ -595,11 +570,9 @@ public class ManagedWindow : IDisposable
         var requests = _frameState.WebViewRequests;
         _frameState.WebViewRequests = null;
 
-        if (_nsWindow == null) return;
-        var nsWindowPtr = _nsWindow.Handle;
-        if (nsWindowPtr == IntPtr.Zero) return;
+        if (_nativeWindow == null) return;
 
-        // Separate into slots (Bun components → shared host) and externals (dedicated WKWebView)
+        // Separate into slots (Bun components → shared host) and externals (dedicated WebView)
         var currentSlotKeys = new HashSet<string>();
 
         if (requests != null)
@@ -609,10 +582,10 @@ public class ManagedWindow : IDisposable
                 if (isSlot)
                 {
                     currentSlotKeys.Add(key);
-                    ProcessSlotRequest(nsWindowPtr, key, url, rx, ry, rw, rh);
+                    ProcessSlotRequest(key, url, rx, ry, rw, rh);
                 }
                 else
-                    ProcessExternalRequest(nsWindowPtr, key, url, rx, ry, rw, rh);
+                    ProcessExternalRequest(key, url, rx, ry, rw, rh);
             }
         }
 
@@ -632,14 +605,13 @@ public class ManagedWindow : IDisposable
                 {
                     var k = key.Replace("'", "\\'");
                     var js = $"window.__removeSlot('{k}')";
-                    NSApplication.SharedApplication.InvokeOnMainThread(() =>
-                        _hostWebView.EvaluateJavaScript(js, null));
+                    _hostWebView.EvaluateJavaScript(js);
                 }
             }
         }
     }
 
-    private void ProcessSlotRequest(IntPtr nsWindowPtr, string key, string url, float rx, float ry, float rw, float rh)
+    private void ProcessSlotRequest(string key, string url, float rx, float ry, float rw, float rh)
     {
         _hostSlots ??= new();
 
@@ -661,51 +633,18 @@ public class ManagedWindow : IDisposable
             if (_hostCreating) return;
             _hostCreating = true;
 
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            _nativeWindow!.CreateWebView(webView =>
             {
                 try
                 {
-                    var nsWindow = ObjCRuntime.Runtime.GetNSObject<NSWindow>(nsWindowPtr);
-                    var contentView = nsWindow?.ContentView;
-                    if (contentView == null) return;
-
-                    _sharedPool ??= new WKProcessPool();
-                    var config = new WKWebViewConfiguration();
-                    config.ProcessPool = _sharedPool;
-                    config.ApplicationNameForUserAgent = "Keystone";
-
-                    var portScript = new WKUserScript(
-                        new NSString($"window.__KEYSTONE_PORT__ = {port};"),
-                        WKUserScriptInjectionTime.AtDocumentStart, true);
-                    config.UserContentController.AddUserScript(portScript);
-
-                    // Direct JS→C# message handler — no Bun round-trip
-                    // Usage in JS: window.webkit.messageHandlers.keystone.postMessage(jsonString)
-                    _messageHandler = new KeystoneMessageHandler(msg => DispatchDirectMessage(msg));
-                    config.UserContentController.AddScriptMessageHandler(_messageHandler, "keystone");
-
-                    var webView = new WKWebView(contentView.Bounds, config);
-                    webView.WantsLayer = true;
-                    webView.AutoresizingMask = NSViewResizingMask.WidthSizable | NSViewResizingMask.HeightSizable;
-
-                    // Transparent background — only slots are visible
-                    webView.SetValueForKey(NSObject.FromObject(false), new NSString("drawsBackground"));
-
-                    // Crash recovery — reload when the WebKit content process is killed
-                    _webViewDelegate = new KeystoneWebViewDelegate(() => OnHostWebViewCrash(webView));
-                    webView.NavigationDelegate = _webViewDelegate;
-
-                    contentView.AddSubview(webView);
-
-                    var hostUrl = $"http://127.0.0.1:{port}/__host__";
-                    var nsUrl = NSUrl.FromString(hostUrl);
-                    if (nsUrl != null)
-                        webView.LoadRequest(new NSUrlRequest(nsUrl));
+                    webView.InjectScriptOnLoad($"window.__KEYSTONE_PORT__ = {port};");
+                    webView.AddMessageHandler("keystone", msg => DispatchDirectMessage(msg));
+                    webView.SetTransparentBackground();
+                    webView.OnCrash = () => OnHostWebViewCrash();
+                    webView.LoadUrl($"http://127.0.0.1:{port}/__host__");
 
                     _hostWebView = webView;
-
-                    // Poll for host readiness (check window.__ready)
-                    PollHostReady(webView);
+                    PollHostReady();
 
                     Console.WriteLine($"[ManagedWindow] Shared host WebView created for window {Id}");
                 }
@@ -728,8 +667,7 @@ public class ManagedWindow : IDisposable
                 {
                     var k = key.Replace("'", "\\'");
                     var js = $"window.__moveSlot('{k}',{rx:F0},{ry:F0},{rw:F0},{rh:F0})";
-                    NSApplication.SharedApplication.InvokeOnMainThread(() =>
-                        _hostWebView!.EvaluateJavaScript(js, null));
+                    _hostWebView!.EvaluateJavaScript(js);
                 }
             }
         }
@@ -756,15 +694,14 @@ public class ManagedWindow : IDisposable
         var wid = Id.Replace("'", "\\'");
         var scriptUrl = $"/web/{k}.js";
         var js = $"window.__addSlot('{k}','{scriptUrl}',{x:F0},{y:F0},{w:F0},{h:F0},'{wid}')";
-        NSApplication.SharedApplication.InvokeOnMainThread(() =>
-            _hostWebView.EvaluateJavaScript(js, null));
+        _hostWebView.EvaluateJavaScript(js);
     }
 
     /// <summary>
-    /// Called by KeystoneWebViewDelegate when the WebKit content process terminates.
+    /// Called by IWebView.OnCrash when the WebKit content process terminates.
     /// Fires OnWebViewCrash (app-layer hook), then reloads after the configured delay.
     /// </summary>
-    private void OnHostWebViewCrash(WKWebView webView)
+    private void OnHostWebViewCrash()
     {
         OnWebViewCrash?.Invoke();
         ApplicationRuntime.Instance?.RaiseWebViewCrash(Id);
@@ -773,21 +710,20 @@ public class ManagedWindow : IDisposable
         if (cfg?.WebViewAutoReload != false)
         {
             var delayMs = cfg?.WebViewReloadDelayMs ?? 200;
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
-            {
-                _hostReady = false;
-                _hostSlots?.Clear();
-                _pendingSlots = null;
+            _hostReady = false;
+            _hostSlots?.Clear();
+            _pendingSlots = null;
 
-                NSTimer.CreateScheduledTimer(delayMs / 1000.0, _ =>
+            Task.Run(async () =>
+            {
+                await Task.Delay(delayMs);
+                ApplicationRuntime.Instance?.RunOnMainThread(() =>
                 {
                     if (_disposed || _hostWebView == null) return;
                     var port = BunManager.Instance.BunPort;
                     if (port <= 0) return;
-                    var nsUrl = NSUrl.FromString($"http://127.0.0.1:{port}/__host__");
-                    if (nsUrl != null)
-                        webView.LoadRequest(new NSUrlRequest(nsUrl));
-                    PollHostReady(webView);
+                    _hostWebView.LoadUrl($"http://127.0.0.1:{port}/__host__");
+                    PollHostReady();
                     Console.WriteLine($"[ManagedWindow] Reloading WebView for window {Id} after content process crash");
                 });
             });
@@ -800,30 +736,28 @@ public class ManagedWindow : IDisposable
         if (_hostWebView == null || !_hostReady) return;
         var k = key.Replace("'", "\\'");
         var js = $"window.__hotSwapSlot('{k}','/web/{k}.js')";
-        NSApplication.SharedApplication.InvokeOnMainThread(() =>
-            _hostWebView.EvaluateJavaScript(js, null));
+        _hostWebView.EvaluateJavaScript(js);
     }
 
-    private void PollHostReady(WKWebView webView)
+    private void PollHostReady()
     {
-        // Poll every 50ms until window.__ready is true
-        void Check()
+        if (_disposed || _hostReady || _hostWebView == null) return;
+        _hostWebView.EvaluateJavaScriptBool("window.__ready === true", ready =>
         {
-            if (_disposed || _hostReady) return;
-            webView.EvaluateJavaScript("window.__ready === true", (result, error) =>
+            if (ready)
             {
-                if (result is NSNumber n && n.BoolValue)
+                _hostReady = true;
+                FlushPendingSlots();
+            }
+            else
+            {
+                Task.Run(async () =>
                 {
-                    _hostReady = true;
-                    FlushPendingSlots();
-                }
-                else
-                {
-                    NSTimer.CreateScheduledTimer(0.05, _ => Check());
-                }
-            });
-        }
-        NSApplication.SharedApplication.InvokeOnMainThread(Check);
+                    await Task.Delay(50);
+                    ApplicationRuntime.Instance?.RunOnMainThread(PollHostReady);
+                });
+            }
+        });
     }
 
     private void FlushPendingSlots()
@@ -835,7 +769,7 @@ public class ManagedWindow : IDisposable
         Console.WriteLine($"[ManagedWindow] Host ready, flushed {_hostSlots?.Count ?? 0} slots for window {Id}");
     }
 
-    private void ProcessExternalRequest(IntPtr nsWindowPtr, string key, string url, float rx, float ry, float rw, float rh)
+    private void ProcessExternalRequest(string key, string url, float rx, float ry, float rw, float rh)
     {
         _externalWebViews ??= new();
         _externalRects ??= new();
@@ -847,10 +781,7 @@ public class ManagedWindow : IDisposable
             {
                 _externalRects[key] = (rx, ry, rw, rh);
                 if (_externalWebViews.TryGetValue(key, out var wv))
-                {
-                    var rect = new CGRect(rx, ry, rw, rh);
-                    NSApplication.SharedApplication.InvokeOnMainThread(() => wv.Frame = rect);
-                }
+                    wv.SetFrame(rx, ry, rw, rh);
             }
         }
         else
@@ -858,39 +789,17 @@ public class ManagedWindow : IDisposable
             _externalRects[key] = (rx, ry, rw, rh);
             var capturedUrl = url;
             var capturedKey = key;
-            var capturedRect = new CGRect(rx, ry, rw, rh);
             var port = BunManager.Instance.BunPort;
 
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            _nativeWindow!.CreateWebView(webView =>
             {
                 try
                 {
-                    var nsWindow = ObjCRuntime.Runtime.GetNSObject<NSWindow>(nsWindowPtr);
-                    var contentView = nsWindow?.ContentView;
-                    if (contentView == null) return;
-
-                    _sharedPool ??= new WKProcessPool();
-                    var config = new WKWebViewConfiguration();
-                    config.ProcessPool = _sharedPool;
-                    config.ApplicationNameForUserAgent = "Keystone";
-
                     if (port > 0)
-                    {
-                        var portScript = new WKUserScript(
-                            new NSString($"window.__KEYSTONE_PORT__ = {port};"),
-                            WKUserScriptInjectionTime.AtDocumentStart, true);
-                        config.UserContentController.AddUserScript(portScript);
-                    }
-
-                    var webView = new WKWebView(capturedRect, config);
-                    webView.WantsLayer = true;
-                    contentView.AddSubview(webView);
-
-                    var nsUrl = NSUrl.FromString(capturedUrl);
-                    if (nsUrl != null)
-                        webView.LoadRequest(new NSUrlRequest(nsUrl));
-
-                    _externalWebViews[capturedKey] = webView;
+                        webView.InjectScriptOnLoad($"window.__KEYSTONE_PORT__ = {port};");
+                    webView.SetFrame(rx, ry, rw, rh);
+                    webView.LoadUrl(capturedUrl);
+                    _externalWebViews![capturedKey] = webView;
                     Console.WriteLine($"[ManagedWindow] External WebView created: {capturedKey} in window {Id}");
                 }
                 catch (Exception ex)
@@ -907,19 +816,9 @@ public class ManagedWindow : IDisposable
         // Dispose shared host WebView
         if (_hostWebView != null)
         {
-            var wv = _hostWebView;
-            var mh = _messageHandler;
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
-            {
-                if (mh != null)
-                    wv.Configuration.UserContentController.RemoveScriptMessageHandler("keystone");
-                wv.NavigationDelegate = null;
-                wv.RemoveFromSuperview();
-                wv.Dispose();
-            });
+            _hostWebView.RemoveMessageHandler("keystone");
+            _hostWebView.Dispose();
             _hostWebView = null;
-            _messageHandler = null;
-            _webViewDelegate = null;
             _hostReady = false;
         }
         _hostSlots?.Clear();
@@ -928,14 +827,8 @@ public class ManagedWindow : IDisposable
         // Dispose external WebViews
         if (_externalWebViews != null)
         {
-            foreach (var (_, webView) in _externalWebViews)
-            {
-                NSApplication.SharedApplication.InvokeOnMainThread(() =>
-                {
-                    webView.RemoveFromSuperview();
-                    webView.Dispose();
-                });
-            }
+            foreach (var (_, wv) in _externalWebViews)
+                wv.Dispose();
             _externalWebViews.Clear();
         }
         _externalRects?.Clear();
@@ -955,53 +848,27 @@ public class ManagedWindow : IDisposable
             ApplicationRuntime.Instance?.DisplayLink.Unsubscribe(_vsyncSignal);
             _vsyncSignal.Dispose();
         }
-        _windowDelegate = null;
+        _nativeWindow?.Dispose();
         (_plugin as IDisposable)?.Dispose();
         _paintCache?.Dispose();
     }
-}
 
-/// <summary>
-/// WKNavigationDelegate that handles WebKit content process crashes.
-/// When the OS kills the WebContent process (OOM, sandbox violation, etc.),
-/// WebKit calls DidWebContentProcessDidTerminate. We reload the page automatically
-/// (after a configurable delay) to restore the web layer — equivalent to
-/// Electron's app.on('render-process-gone') + BrowserWindow.reload().
-/// </summary>
-internal sealed class KeystoneWebViewDelegate : WKNavigationDelegate
-{
-    private readonly Action _onCrash;
+    // --- Window Delegate (nested, implements INativeWindowDelegate) ---
 
-    public KeystoneWebViewDelegate(Action onCrash)
+    private sealed class NativeWindowDelegate : INativeWindowDelegate
     {
-        _onCrash = onCrash;
-    }
-
-    public override void ContentProcessDidTerminate(WKWebView webView)
-    {
-        Console.WriteLine("[KeystoneWebViewDelegate] WebKit content process terminated — reloading");
-        _onCrash();
-    }
-}
-
-/// <summary>
-/// WKScriptMessageHandler bridge — receives messages posted from JS via
-/// window.webkit.messageHandlers.keystone.postMessage(jsonString).
-/// Delivers them directly to C# without routing through Bun.
-/// </summary>
-internal sealed class KeystoneMessageHandler : WKScriptMessageHandler
-{
-    private readonly Action<string> _onMessage;
-
-    public KeystoneMessageHandler(Action<string> onMessage)
-    {
-        _onMessage = onMessage;
-    }
-
-    public override void DidReceiveScriptMessage(WKUserContentController userContentController, WKScriptMessage message)
-    {
-        var body = message.Body?.ToString();
-        if (body != null)
-            _onMessage(body);
+        private readonly ManagedWindow _w;
+        internal NativeWindowDelegate(ManagedWindow w) => _w = w;
+        public void OnResizeStarted() => _w._isLiveResizing = true;
+        public void OnResized(double w, double h) { _w.UpdateSize(); _w.RequestRedraw(); }
+        public void OnResizeEnded()
+        {
+            _w._isLiveResizing = false;
+            _w._purgeAfterResize = true;
+            _w.RefreshMousePosition();
+            _w.RequestRedraw();
+        }
+        public void OnClosed() { }
+        public void OnMoved(double x, double y) { }
     }
 }

@@ -4,14 +4,14 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
-using AppKit;
-using CoreAnimation;
+using AppKit; // Dialog/shell invoke handlers, autorelease pool
 using Keystone.Core;
 using Keystone.Core.Graphics.Skia;
 using Keystone.Core.Management;
 using Keystone.Core.Rendering;
 using Keystone.Core.Management.Bun;
 using Keystone.Core.Platform;
+using Keystone.Core.Platform.MacOS;
 using Keystone.Core.Plugins;
 
 namespace Keystone.Core.Runtime;
@@ -28,6 +28,7 @@ public class ApplicationRuntime : ICoreContext
 
     private readonly KeystoneConfig _config;
     private readonly string _rootDir;
+    private readonly IPlatform _platform;
     private readonly WindowManager _windowManager;
     private readonly PluginRegistry _pluginRegistry;
     private readonly ActionRouter _actionRouter;
@@ -88,12 +89,13 @@ public class ApplicationRuntime : ICoreContext
     IBunWorkerManager ICoreContext.Workers => BunWorkerManager.Instance;
     IHttpRouter ICoreContext.Http => _httpRouter;
 
-    public ApplicationRuntime(KeystoneConfig config, string rootDir)
+    public ApplicationRuntime(KeystoneConfig config, string rootDir, IPlatform platform)
     {
         _config = config;
         _rootDir = rootDir;
+        _platform = platform;
         _pluginRegistry = new PluginRegistry();
-        _windowManager = new WindowManager();
+        _windowManager = new WindowManager(platform);
         _windowManager.OnSpawnWindow = SpawnWindow;
         _windowManager.OnSpawnWindowAt = SpawnWindowAt;
         _displayLink = new DisplayLink();
@@ -134,13 +136,10 @@ public class ApplicationRuntime : ICoreContext
             Icons.Load(iconDir);
 
         // 3. Dock + menu bar — actions route through ActionRouter
-        var appDelegate = new KeystoneAppDelegate
-        {
-            OnDockClick = NativeAppKit.BringAllWindowsToFront,
-            GetWindows = () => _windowManager.GetWindowsForDockMenu()
-        };
-        NSApplication.SharedApplication.Delegate = appDelegate;
-        MainMenuFactory.Initialize(action => _actionRouter.Execute(action, "menu"), _config);
+        if (_platform is MacOSPlatform macPlatform)
+            macPlatform.SetAppDelegate(() => _platform.BringAllWindowsToFront());
+        _platform.SetWindowListProvider(() => _windowManager.GetWindowsForDockMenu());
+        _platform.InitializeMenu(action => _actionRouter.Execute(action, "menu"), _config);
 
         // 4. App assembly — loaded into default ALC before plugins for type visibility
         if (_config.AppAssembly != null)
@@ -197,7 +196,7 @@ public class ApplicationRuntime : ICoreContext
         // 7. Populate tools menu from scripts
         var toolScripts = ScriptManager.GetToolScripts();
         if (toolScripts.Length > 0)
-            MainMenuFactory.AddToolScripts(toolScripts);
+            _platform.AddToolScripts(toolScripts);
 
         // 8. Wire hot-reload coordination
         _windowManager.SubscribeToRegistry(_pluginRegistry);
@@ -486,11 +485,10 @@ public class ApplicationRuntime : ICoreContext
         return _windowManager.CreateWindow(id, plugin);
     }
 
-    public void RegisterWindow(ManagedWindow window, NSWindow nsWindow, NSView nsView, CAMetalLayer metalLayer)
+    public void RegisterWindow(ManagedWindow window, INativeWindow nativeWindow)
     {
-        window.OnCreated(nsWindow, nsView, metalLayer);
+        window.OnCreated(nativeWindow);
         _windowManager.RegisterWindow(window);
-        _windowManager.UpdateWindowHandle(window, nsWindow);
     }
 
     public void Run()
@@ -498,7 +496,7 @@ public class ApplicationRuntime : ICoreContext
         _displayLink.Start();
 
         // Pump run loop to allow Metal/GPU initialization to complete
-        NativeAppKit.PumpRunLoop();
+        _platform.PumpRunLoop();
         _windowManager.ProcessEvents();
 
         OnBeforeRun?.Invoke();
@@ -516,7 +514,7 @@ public class ApplicationRuntime : ICoreContext
         }
 
         // Pump run loop to flush GPU operations from window creation
-        NativeAppKit.PumpRunLoop(0.1);
+        _platform.PumpRunLoop(0.1);
 
         Console.WriteLine("[ApplicationRuntime] Main loop started");
         while (!_cancellation.Token.IsCancellationRequested)
@@ -525,7 +523,7 @@ public class ApplicationRuntime : ICoreContext
                 continue;
 
             var pool = objc_autoreleasePoolPush();
-            NativeAppKit.PumpRunLoop(0.001);
+            _platform.PumpRunLoop(0.001);
             _windowManager.ProcessEvents();
             _windowManager.CheckTabDragState();
             _loader?.ProcessPendingReloads();
@@ -609,7 +607,7 @@ public class ApplicationRuntime : ICoreContext
         SpawnWindowAt(windowType);
     }
 
-    private (NSWindow nsWindow, ManagedWindow managed)? SpawnWindowAt(string windowType)
+    private (INativeWindow nativeWindow, ManagedWindow managed)? SpawnWindowAt(string windowType)
     {
         var plugin = _pluginRegistry.GetWindow(windowType);
         if (plugin == null)
@@ -623,16 +621,24 @@ public class ApplicationRuntime : ICoreContext
         var floating = winCfg?.Floating ?? false;
 
         var (defaultW, defaultH) = plugin.DefaultSize;
-        var (nsWindow, nsView, metalLayer) = NativeAppKit.CreateWindowCentered(
-            windowType, (int)defaultW, (int)defaultH, titleBarStyle, floating);
+
+        // Center window on main screen
+        var (sx, sy, sw, sh) = _platform.GetMainScreenFrame();
+        var x = sx + (sw - defaultW) / 2;
+        var y = sy + (sh - defaultH) / 2;
+
+        var config = new Platform.WindowConfig(x, y, defaultW, defaultH, floating, titleBarStyle);
+        var nativeWindow = _platform.CreateWindow(config);
 
         var managedWindow = CreateWindow(plugin);
         managedWindow.AlwaysOnTop = floating;
-        RegisterWindow(managedWindow, nsWindow, nsView, metalLayer);
+        RegisterWindow(managedWindow, nativeWindow);
+
+        nativeWindow.Show();
 
         RegisterBuiltinInvokeHandlers(managedWindow);
         Console.WriteLine($"[ApplicationRuntime] Spawned {windowType} window id={managedWindow.Id} titleBarStyle={titleBarStyle}");
-        return (nsWindow, managedWindow);
+        return (nativeWindow, managedWindow);
     }
 
     // === Built-in invoke handlers ===
@@ -677,7 +683,7 @@ public class ApplicationRuntime : ICoreContext
             var title = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                         args.TryGetProperty("title", out var t) ? t.GetString() : null;
             if (title != null)
-                NSApplication.SharedApplication.InvokeOnMainThread(() =>
+                RunOnMainThread(() =>
                 {
                     if (window.NativeWindow != null)
                         window.NativeWindow.Title = title;
@@ -691,7 +697,7 @@ public class ApplicationRuntime : ICoreContext
                        args.TryGetProperty("type", out var t) ? t.GetString() : null;
             if (type == null) return Task.FromResult<object?>(null);
             var tcs = new TaskCompletionSource<object?>();
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            RunOnMainThread(() =>
             {
                 try
                 {
@@ -707,11 +713,10 @@ public class ApplicationRuntime : ICoreContext
         {
             var floating = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                            args.TryGetProperty("floating", out var f) && f.GetBoolean();
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            RunOnMainThread(() =>
             {
                 window.AlwaysOnTop = floating;
-                if (window.NativeWindow != null)
-                    NativeAppKit.SetWindowFloating(window.NativeWindow, floating);
+                window.NativeWindow?.SetFloating(floating);
             });
             return Task.FromResult<object?>(null);
         });
@@ -722,36 +727,43 @@ public class ApplicationRuntime : ICoreContext
         window.RegisterInvokeHandler("window:getBounds", _ =>
         {
             var tcs = new TaskCompletionSource<object?>();
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            RunOnMainThread(() =>
             {
-                var frame = window.NativeWindow?.Frame;
-                tcs.TrySetResult(frame != null
-                    ? new { x = frame.Value.X, y = frame.Value.Y,
-                            width = frame.Value.Width, height = frame.Value.Height }
-                    : null);
+                if (window.NativeWindow != null)
+                {
+                    var (fx, fy, fw, fh) = window.NativeWindow.Frame;
+                    tcs.TrySetResult(new { x = fx, y = fy, width = fw, height = fh });
+                }
+                else
+                    tcs.TrySetResult(null);
             });
             return tcs.Task;
         });
 
         window.RegisterInvokeHandler("window:setBounds", args =>
         {
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            RunOnMainThread(() =>
             {
                 if (window.NativeWindow == null) return;
-                var frame = window.NativeWindow.Frame;
-                var x = args.TryGetProperty("x", out var xv) ? xv.GetDouble() : (double)frame.X;
-                var y = args.TryGetProperty("y", out var yv) ? yv.GetDouble() : (double)frame.Y;
-                var w = args.TryGetProperty("width", out var wv) ? wv.GetDouble() : (double)frame.Width;
-                var h = args.TryGetProperty("height", out var hv) ? hv.GetDouble() : (double)frame.Height;
-                NativeAppKit.SetWindowFrame(window.NativeWindow, x, y, w, h);
+                var (fx, fy, fw, fh) = window.NativeWindow.Frame;
+                var x = args.TryGetProperty("x", out var xv) ? xv.GetDouble() : fx;
+                var y = args.TryGetProperty("y", out var yv) ? yv.GetDouble() : fy;
+                var w = args.TryGetProperty("width", out var wv) ? wv.GetDouble() : fw;
+                var h = args.TryGetProperty("height", out var hv) ? hv.GetDouble() : fh;
+                window.NativeWindow.SetFrame(x, y, w, h);
             });
             return Task.FromResult<object?>(null);
         });
 
         window.RegisterInvokeHandler("window:center", _ =>
         {
-            NSApplication.SharedApplication.InvokeOnMainThread(() =>
-                window.NativeWindow?.Center());
+            RunOnMainThread(() =>
+            {
+                if (window.NativeWindow == null) return;
+                var (_, _, fw, fh) = window.NativeWindow.Frame;
+                var (sx, sy, sw, sh) = _platform.GetMainScreenFrame();
+                window.NativeWindow.SetFrame(sx + (sw - fw) / 2, sy + (sh - fh) / 2, fw, fh);
+            });
             return Task.FromResult<object?>(null);
         });
 
@@ -858,14 +870,15 @@ public class ApplicationRuntime : ICoreContext
             var path = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                        args.TryGetProperty("path", out var p) ? p.GetString() : null;
             if (string.IsNullOrEmpty(path)) return Task.FromResult<object?>(false);
-            var ok = false;
             try
             {
-                NSApplication.SharedApplication.InvokeOnMainThread(() =>
-                    ok = AppKit.NSWorkspace.SharedWorkspace.OpenFile(path));
+                _platform.OpenPath(path);
+                return Task.FromResult<object?>(true);
             }
-            catch { }
-            return Task.FromResult<object?>(ok);
+            catch
+            {
+                return Task.FromResult<object?>(false);
+            }
         });
 
         // ── http ──────────────────────────────────────────────────────────
@@ -879,7 +892,7 @@ public class ApplicationRuntime : ICoreContext
         });
     }
 
-    // === Memory monitoring ===
+    // === Memory monitoring (macOS-specific P/Invoke — port for other platforms) ===
 
     public static long GetPhysicalFootprint()
     {
@@ -930,10 +943,6 @@ public class ApplicationRuntime : ICoreContext
 
         // IOSurface orphan detection — if unaccounted memory exceeds 200MB,
         // purge all GPU caches and force GC to reclaim stale IOSurfaces.
-        // This is an intentionally aggressive cleanup hammer for persistent
-        // IOSurface leaks that can survive multiple resize/teardown paths.
-        // It keeps memory usage bounded for now; root-cause fixes are still needed.
-        // TODO: make threshold/behavior configurable.
         long expectedTotal = 0;
         long cacheTotal = 0;
         foreach (var w in windows)
@@ -966,7 +975,7 @@ public class ApplicationRuntime : ICoreContext
         }
     }
 
-    // === Native interop ===
+    // === Native interop (macOS-specific — port for other platforms) ===
 
     [DllImport("/usr/lib/libobjc.A.dylib")]
     private static extern IntPtr objc_autoreleasePoolPush();

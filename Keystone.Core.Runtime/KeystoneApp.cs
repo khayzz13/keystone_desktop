@@ -5,10 +5,10 @@
 // Handles the full bootstrap sequence: platform init → runtime → run loop → shutdown.
 // Apps can use this instead of writing their own Program.cs.
 
-using AppKit;
 using Keystone.Core;
 using Keystone.Core.Graphics.Skia;
 using Keystone.Core.Platform;
+using Keystone.Core.Platform.MacOS;
 using Keystone.Core.Plugins;
 
 namespace Keystone.Core.Runtime;
@@ -91,11 +91,11 @@ public class KeystoneApp
 
         // Platform init — must happen before ApplicationRuntime
         NativeLibraryLoader.Initialize();
-        NSApplication.Init();
-        NativeAppKit.ActivateApp();
+        var platform = new MacOSPlatform();
+        platform.Initialize();
         SkiaWindow.Initialize();
 
-        var runtime = new ApplicationRuntime(_config, rootDir);
+        var runtime = new ApplicationRuntime(_config, rootDir, platform);
 
         // Register native plugins after engine init — they'll be available for SpawnInitialWindows
         runtime.OnInitialized += () =>
