@@ -262,6 +262,20 @@ public class WindowConfig
 
     [JsonPropertyName("toolbar")]
     public ToolbarConfig? Toolbar { get; set; }
+
+    /// <summary>
+    /// "hidden" (default) — Native traffic lights, transparent titlebar, web fills full window.
+    /// "toolkit" — GPU-rendered title bar with close/minimize/float/tabs. Opt-in for tiling WM apps.
+    /// "none" — Completely frameless. No traffic lights, no title bar.
+    /// </summary>
+    [JsonPropertyName("titleBarStyle")]
+    public string TitleBarStyle { get; set; } = "hidden";
+
+    /// <summary>
+    /// Whether this window floats above all other windows (always-on-top).
+    /// </summary>
+    [JsonPropertyName("floating")]
+    public bool Floating { get; set; } = false;
 }
 
 public class ToolbarConfig

@@ -406,6 +406,21 @@ export const nativeWindow = {
   close: () => keystone().action('window:close'),
   /** Open a new window of the given registered type. Returns the new window's ID. */
   open: (type: string): Promise<string> => keystone().invoke('window:open', { type }),
+  /** Set whether this window floats above all other windows */
+  setFloating: (floating: boolean): Promise<void> =>
+    keystone().invoke('window:setFloating', { floating }),
+  /** Get the current floating state */
+  isFloating: (): Promise<boolean> =>
+    keystone().invoke('window:isFloating'),
+  /** Get the window's current bounds */
+  getBounds: (): Promise<{ x: number; y: number; width: number; height: number }> =>
+    keystone().invoke('window:getBounds'),
+  /** Set the window's bounds (all fields optional — omitted fields keep current value) */
+  setBounds: (bounds: { x?: number; y?: number; width?: number; height?: number }): Promise<void> =>
+    keystone().invoke('window:setBounds', bounds),
+  /** Center the window on the main screen */
+  center: (): Promise<void> =>
+    keystone().invoke('window:center'),
 };
 
 export const dialog = {

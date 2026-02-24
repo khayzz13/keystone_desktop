@@ -54,7 +54,7 @@ public class FrameState
     // Global app state
     public bool BindModeActive { get; set; }
     public bool IsSelectedForBind { get; set; }
-    public bool AlwaysOnTop { get; set; } = true;
+    public bool AlwaysOnTop { get; set; } = false;
 
     // Bind container state (when this plugin is inside a bind)
     public bool IsInBind { get; set; }

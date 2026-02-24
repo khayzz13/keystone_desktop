@@ -1,25 +1,49 @@
 # Window Chrome
 
-By default Keystone windows are square, floating, and have a visible title bar. None of that is required — you can make the native window invisible to the UI entirely, leaving only what macOS always shows (traffic lights), or take full control of the window surface from your web component.
+By default Keystone windows use a native macOS titled window with a transparent title bar — your web component fills the entire frame, native traffic lights (close/minimize/zoom) appear at the standard position, and the window gets compositor-level rounded corners. This is the right choice for most apps.
+
+For apps that want a custom GPU-rendered title bar with tabs, float toggle, and tiling support, set `titleBarStyle: "toolkit"`. For fully frameless windows with no chrome at all, use `"none"`.
 
 ---
 
-## The Default
+## The Default (`"hidden"`)
 
 Out of the box, a window declared in `keystone.json` gets:
 
-- Standard macOS rounded corners
-- A native title bar with the configured `title` text
-- Traffic light buttons (close/minimize/zoom) in the standard position
-- Standard window shadow and float behavior
+- Native macOS traffic lights (close, minimize, zoom)
+- Compositor-level rounded corners
+- Standard window shadow
+- Normal z-ordering (not floating)
+- Your web component fills the full window area, including behind the traffic lights
 
-This is the fastest path if you're building a utility or productivity app and want to match the platform immediately.
+This is the standard macOS look. No extra config needed.
+
+### Making the window draggable
+
+With the default `"hidden"` style, there's no visible native title bar. Set `-webkit-app-region: drag` on any element you want to act as the drag handle:
+
+```css
+.titlebar {
+  -webkit-app-region: drag;
+  height: 38px;     /* standard macOS title bar height */
+}
+
+.titlebar button {
+  -webkit-app-region: no-drag;  /* buttons must opt out */
+}
+```
+
+This tells WebKit to forward mouse events in that region to the window's native drag behavior.
+
+### Traffic light inset
+
+The native traffic lights sit at approximately (12, 12) from the top-left. Your web content should leave space for them — typically `padding-top: 38px` and `padding-left: 78px` on your title bar region, or use a transparent drag region that spans the top of the window.
 
 ---
 
-## Full-Bleed Web (Seamless Look)
+## Toolkit Mode (GPU Title Bar)
 
-If your design calls for a fully custom appearance — your own title bar, custom traffic light positioning, or a UI that bleeds to the very edges of the window — set `titleBarStyle` to `hidden` in the window config.
+For apps that want a managed window chrome with tabs, float toggle, bind/tiling integration, and custom toolbar — set `titleBarStyle` to `"toolkit"`:
 
 ```jsonc
 // keystone.json
@@ -29,67 +53,26 @@ If your design calls for a fully custom appearance — your own title bar, custo
       "component": "app",
       "width": 1200,
       "height": 800,
-      "titleBarStyle": "hidden"
+      "titleBarStyle": "toolkit"
     }
   ]
 }
 ```
 
-With `hidden`:
-- The native title bar disappears
-- Traffic lights remain in their standard top-left position (macOS always owns them)
-- Your web component fills the entire window frame, including the area behind where the title bar was
-- You're responsible for a drag region (see below)
+With `"toolkit"`:
+- A GPU-rendered title bar appears at the top (close, minimize, float toggle, tab strip)
+- No native traffic lights (the window is borderless — the toolkit provides its own buttons)
+- Web content starts below the title bar
+- Supports tab groups, bind/tiling, and the toolkit toolbar system
+- Optional `toolbar` config adds a toolbar strip below the title bar
 
-### Making the window draggable
-
-When the title bar is hidden, there's no native drag region. Set `-webkit-app-region: drag` on any element you want to act as the drag handle:
-
-```css
-#titlebar {
-  -webkit-app-region: drag;
-  height: 38px;     /* standard macOS title bar height */
-}
-
-#titlebar button {
-  -webkit-app-region: no-drag;  /* buttons must opt out */
-}
-```
-
-This tells WebKit to forward mouse events in that region to the window's native drag behavior.
+This is a non-native look — similar to how Electron apps style their own chrome. Use it when you want the tiling window manager features or a custom chrome experience.
 
 ---
 
-## Traffic Lights Only
+## Frameless (`"none"`)
 
-For a minimal chrome that disappears into the background, use `titleBarStyle: "hidden"` and style your own title bar area to be transparent or match your content:
-
-```typescript
-// In your mount function
-root.style.cssText = `
-  height: 100%;
-  /* No background in the traffic-light zone — shows through to the window */
-  padding-top: 38px;
-`;
-
-const titlebar = document.createElement("div");
-titlebar.style.cssText = `
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  height: 38px;
-  -webkit-app-region: drag;
-  /* transparent — traffic lights show at native position */
-`;
-root.appendChild(titlebar);
-```
-
-The traffic lights always render at the system level — you cannot remove or reposition them without disabling them entirely via a native app layer change.
-
----
-
-## Removing Window Decoration (Frameless)
-
-To go completely frameless — no title bar, no standard rounded corners from the window frame — use `titleBarStyle: "none"`. The window becomes a plain rectangle. You own the entire surface.
+To go completely frameless — no title bar, no traffic lights, no rounded corners — use `titleBarStyle: "none"`. The window is a plain rectangle. You own the entire surface.
 
 ```jsonc
 {
@@ -104,7 +87,37 @@ To go completely frameless — no title bar, no standard rounded corners from th
 }
 ```
 
-Note: frameless windows on macOS won't have the standard drop shadow unless you add it from the native layer. For most cases `"hidden"` is the right choice — `"none"` is for fully custom shapes or floating panels.
+Note: frameless windows on macOS won't have the standard drop shadow unless you add it from the native layer. For most cases the default `"hidden"` is the right choice — `"none"` is for fully custom shapes or floating panels.
+
+---
+
+## Floating Windows
+
+By default, windows use normal z-ordering — they participate in standard macOS window layering and don't float above other apps. To make a window always-on-top, set `floating: true`:
+
+```jsonc
+{
+  "windows": [
+    {
+      "component": "player",
+      "title": "Mini Player",
+      "width": 300,
+      "height": 200,
+      "floating": true
+    }
+  ]
+}
+```
+
+You can also toggle floating at runtime from your web component:
+
+```typescript
+import { nativeWindow } from "@keystone/sdk/bridge";
+
+await nativeWindow.setFloating(true);   // pin above other windows
+await nativeWindow.setFloating(false);  // return to normal z-order
+const isFloating = await nativeWindow.isFloating();
+```
 
 ---
 
@@ -112,15 +125,45 @@ Note: frameless windows on macOS won't have the standard drop shadow unless you 
 
 ### Rounded corners
 
-macOS handles rounded corners at the compositor level for standard windows. If you use `titleBarStyle: "hidden"`, the native window still has rounded corners — your web content will be clipped to that shape automatically.
+macOS handles rounded corners at the compositor level for titled windows. With the default `"hidden"` style, the native window still has rounded corners — your web content is clipped to that shape automatically.
 
-### Non-floating (standard behavior)
-
-The default window level is `normal` — it participates in standard window z-ordering and doesn't float above other apps. This matches macOS conventions. To get the standard behavior you don't need to do anything.
+With `"toolkit"` or `"none"` (borderless), macOS does not provide compositor-level rounding.
 
 ### Fullscreen and zoom
 
-The native zoom (green traffic light) button works by default. `nativeWindow.maximize()` from the bridge calls `NSWindow.Zoom`. If you want to intercept or disable zoom, register an invoke handler or override the action in your app layer.
+The native zoom (green traffic light) button works with the default `"hidden"` style. `nativeWindow.maximize()` from the bridge calls `NSWindow.Zoom`. If you want to intercept or disable zoom, register an invoke handler or override the action in your app layer.
+
+---
+
+## Window Control from the SDK
+
+The bridge provides window control methods:
+
+```typescript
+import { nativeWindow } from "@keystone/sdk/bridge";
+
+// Basic controls
+nativeWindow.minimize();
+nativeWindow.maximize();
+nativeWindow.close();
+
+// Title
+await nativeWindow.setTitle("New Title");
+
+// Floating
+await nativeWindow.setFloating(true);
+const floating = await nativeWindow.isFloating();
+
+// Bounds
+const bounds = await nativeWindow.getBounds();
+// => { x: 100, y: 200, width: 800, height: 600 }
+
+await nativeWindow.setBounds({ width: 1024, height: 768 });  // omitted fields keep current value
+await nativeWindow.center();
+
+// Open a new window
+const windowId = await nativeWindow.open("settings");
+```
 
 ---
 
@@ -151,10 +194,11 @@ This is the escape hatch for anything not covered by `titleBarStyle` — vibranc
 
 | Goal | Setting |
 |------|---------|
-| Standard macOS look | Default (no extra config needed) |
-| Web controls the title bar area | `"titleBarStyle": "hidden"` |
-| Traffic lights only, no native title | `"titleBarStyle": "hidden"` + transparent drag region |
+| Standard macOS look (traffic lights, rounded corners) | Default (no config needed) |
+| Web controls everything, traffic lights present | Default (`"hidden"`) |
+| GPU title bar with tabs/tiling | `"titleBarStyle": "toolkit"` |
 | Completely frameless | `"titleBarStyle": "none"` |
+| Always-on-top | `"floating": true` |
 | Per-window native NSWindow control | C# app layer via `IWindowPlugin` or `OnBeforeRun` hook |
 
 ---
@@ -164,3 +208,4 @@ This is the escape hatch for anything not covered by `titleBarStyle` — vibranc
 - [Getting Started](./getting-started.md) — project structure and first run
 - [Web Components](./web-components.md) — building the UI that fills the window
 - [C# App Layer](./csharp-app-layer.md) — native window control from code
+- [Native API Reference](./native-api.md) — all built-in invoke channels

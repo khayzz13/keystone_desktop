@@ -43,9 +43,32 @@ public static class NativeAppKit
             NSWindowStyle.Borderless | NSWindowStyle.Resizable,
             NSBackingStore.Buffered, false)
         {
-            Level = NSWindowLevel.Floating,
+            Level = NSWindowLevel.Normal,
             HidesOnDeactivate = false,
             BackgroundColor = NSColor.DarkGray,
+            IsOpaque = true
+        };
+        return window;
+    }
+
+    /// <summary>
+    /// Titled window with transparent titlebar for "hidden" titleBarStyle.
+    /// Native rounded corners, native traffic lights (close/minimize/zoom),
+    /// full-bleed content, standard shadow, normal z-ordering.
+    /// </summary>
+    public static NSWindow CreateTitledTransparentWindow(double x, double y, double width, double height)
+    {
+        var window = new NSWindow(
+            new CGRect(x, y, width, height),
+            NSWindowStyle.Titled | NSWindowStyle.Resizable | NSWindowStyle.Closable
+                | NSWindowStyle.Miniaturizable | NSWindowStyle.FullSizeContentView,
+            NSBackingStore.Buffered, false)
+        {
+            Level = NSWindowLevel.Normal,
+            HidesOnDeactivate = false,
+            TitlebarAppearsTransparent = true,
+            TitleVisibility = NSWindowTitleVisibility.Hidden,
+            BackgroundColor = NSColor.Black,
             IsOpaque = true
         };
         return window;
@@ -83,13 +106,21 @@ public static class NativeAppKit
     }
 
     public static (NSWindow window, NSView view, CAMetalLayer metalLayer) CreateWindowCentered(
-        string title, int width, int height)
+        string title, int width, int height, string titleBarStyle = "hidden", bool floating = false)
     {
         var screen = NSScreen.MainScreen!.Frame;
         var x = (screen.Width - width) / 2;
         var y = (screen.Height - height) / 2;
 
-        var window = CreateBorderlessWindow(x, y, width, height);
+        // "hidden" (default) = native titled window with transparent titlebar
+        // "toolkit" or "none" = borderless window (toolkit renders its own chrome, none has nothing)
+        var window = titleBarStyle == "hidden"
+            ? CreateTitledTransparentWindow(x, y, width, height)
+            : CreateBorderlessWindow(x, y, width, height);
+
+        if (floating)
+            SetWindowFloating(window, true);
+
         var view = window.ContentView!;
         var metalLayer = MakeLayerBacked(view);
         window.MakeKeyAndOrderFront(null);

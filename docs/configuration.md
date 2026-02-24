@@ -31,7 +31,9 @@ Lives at the root of your app directory. Controls the C# host process.
       "title": "My App",
       "width": 1024,
       "height": 700,
-      "spawn": true           // open this window on launch
+      "spawn": true,          // open this window on launch
+      "titleBarStyle": "hidden",  // "hidden" (default), "toolkit", or "none"
+      "floating": false       // always-on-top (default: false)
     }
   ],
 
@@ -106,9 +108,23 @@ Each entry in `windows` declares a component type the runtime knows about. The `
   "title": "Dashboard",       // NSWindow title bar text
   "width": 1400,
   "height": 900,
-  "spawn": true               // false = registered but not opened on launch
+  "spawn": true,              // false = registered but not opened on launch
+  "titleBarStyle": "hidden",  // "hidden" | "toolkit" | "none"
+  "floating": false            // always-on-top window
 }
 ```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `component` | string | required | Web component name or `IWindowPlugin.WindowType` |
+| `title` | string | component name | Window title |
+| `width` | number | 800 | Initial width in points |
+| `height` | number | 600 | Initial height in points |
+| `spawn` | bool | true | Open on launch |
+| `titleBarStyle` | string | `"hidden"` | `"hidden"` = native traffic lights + full-bleed web; `"toolkit"` = GPU title bar with tabs/float; `"none"` = frameless |
+| `floating` | bool | false | Always-on-top |
+
+See [Window Chrome](./window-chrome.md) for detailed behavior of each `titleBarStyle` mode.
 
 Windows with `spawn: false` can be opened programmatically:
 ```typescript

@@ -189,7 +189,7 @@ public class ManagedWindow : IDisposable
     public string? GroupId { get; set; }
 
     // Always-on-top state
-    public bool AlwaysOnTop { get; set; } = true;
+    public bool AlwaysOnTop { get; set; } = false;
 
     // Overlay anchor position
     public float OverlayAnchorX { get; set; }

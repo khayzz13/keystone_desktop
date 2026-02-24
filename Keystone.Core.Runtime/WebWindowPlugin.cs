@@ -1,5 +1,7 @@
-// WebWindowPlugin — built-in window plugin for config-declared web windows
-// Renders GPU title bar (toolkit) + optional toolbar + Flex.Bun content area.
+// WebWindowPlugin — built-in window plugin for config-declared web windows.
+// titleBarStyle "toolkit": GPU title bar (close/minimize/float/tabs) + optional toolbar + web content.
+// titleBarStyle "hidden" (default): web content fills full window; native traffic lights from macOS.
+// titleBarStyle "none": web content fills full window; no native chrome at all.
 // Created automatically from keystone.json windows[] entries.
 
 using Keystone.Core;
@@ -34,31 +36,34 @@ public class WebWindowPlugin : WindowPluginBase
         var h = state.Height;
 
         var children = new List<SceneNode>();
+        float contentY = 0;
 
-        // Title bar
-        var titleBar = TitleBar.Build(state, w);
-        children.Add(new FlexGroupNode
+        // GPU title bar only for "toolkit" mode (opt-in)
+        if (_cfg.TitleBarStyle == "toolkit")
         {
-            Id = 10,
-            Root = titleBar,
-            X = 0, Y = 0, W = w, H = TitleBar.Height,
-            Buttons = _buttons
-        });
-
-        float contentY = TitleBar.Height;
-
-        // Optional toolbar from config
-        if (_cfg.Toolbar?.Items.Count > 0)
-        {
-            var toolbar = BuildToolbar(state, w);
+            var titleBar = TitleBar.Build(state, w);
             children.Add(new FlexGroupNode
             {
-                Id = 20,
-                Root = toolbar,
-                X = 0, Y = contentY, W = w, H = Theme.StripHeight,
+                Id = 10,
+                Root = titleBar,
+                X = 0, Y = 0, W = w, H = TitleBar.Height,
                 Buttons = _buttons
             });
-            contentY += Theme.StripHeight;
+            contentY = TitleBar.Height;
+
+            // Optional toolbar from config (toolkit mode only)
+            if (_cfg.Toolbar?.Items.Count > 0)
+            {
+                var toolbar = BuildToolbar(state, w);
+                children.Add(new FlexGroupNode
+                {
+                    Id = 20,
+                    Root = toolbar,
+                    X = 0, Y = contentY, W = w, H = Theme.StripHeight,
+                    Buttons = _buttons
+                });
+                contentY += Theme.StripHeight;
+            }
         }
 
         // Content area — web component filling remaining space

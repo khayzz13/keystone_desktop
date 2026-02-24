@@ -615,14 +615,20 @@ public class ApplicationRuntime : ICoreContext
             return null;
         }
 
+        var winCfg = _config.Windows.FirstOrDefault(w => w.Component == windowType);
+        var titleBarStyle = winCfg?.TitleBarStyle ?? "hidden";
+        var floating = winCfg?.Floating ?? false;
+
         var (defaultW, defaultH) = plugin.DefaultSize;
-        var (nsWindow, nsView, metalLayer) = NativeAppKit.CreateWindowCentered(windowType, (int)defaultW, (int)defaultH);
+        var (nsWindow, nsView, metalLayer) = NativeAppKit.CreateWindowCentered(
+            windowType, (int)defaultW, (int)defaultH, titleBarStyle, floating);
 
         var managedWindow = CreateWindow(plugin);
+        managedWindow.AlwaysOnTop = floating;
         RegisterWindow(managedWindow, nsWindow, nsView, metalLayer);
 
         RegisterBuiltinInvokeHandlers(managedWindow);
-        Console.WriteLine($"[ApplicationRuntime] Spawned {windowType} window id={managedWindow.Id}");
+        Console.WriteLine($"[ApplicationRuntime] Spawned {windowType} window id={managedWindow.Id} titleBarStyle={titleBarStyle}");
         return (nsWindow, managedWindow);
     }
 
@@ -692,6 +698,58 @@ public class ApplicationRuntime : ICoreContext
                 catch (Exception ex) { tcs.TrySetException(ex); }
             });
             return tcs.Task;
+        });
+
+        window.RegisterInvokeHandler("window:setFloating", args =>
+        {
+            var floating = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                           args.TryGetProperty("floating", out var f) && f.GetBoolean();
+            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            {
+                window.AlwaysOnTop = floating;
+                if (window.NativeWindow != null)
+                    NativeAppKit.SetWindowFloating(window.NativeWindow, floating);
+            });
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:isFloating", _ =>
+            Task.FromResult<object?>(window.AlwaysOnTop));
+
+        window.RegisterInvokeHandler("window:getBounds", _ =>
+        {
+            var tcs = new TaskCompletionSource<object?>();
+            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            {
+                var frame = window.NativeWindow?.Frame;
+                tcs.TrySetResult(frame != null
+                    ? new { x = frame.Value.X, y = frame.Value.Y,
+                            width = frame.Value.Width, height = frame.Value.Height }
+                    : null);
+            });
+            return tcs.Task;
+        });
+
+        window.RegisterInvokeHandler("window:setBounds", args =>
+        {
+            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+            {
+                if (window.NativeWindow == null) return;
+                var frame = window.NativeWindow.Frame;
+                var x = args.TryGetProperty("x", out var xv) ? xv.GetDouble() : (double)frame.X;
+                var y = args.TryGetProperty("y", out var yv) ? yv.GetDouble() : (double)frame.Y;
+                var w = args.TryGetProperty("width", out var wv) ? wv.GetDouble() : (double)frame.Width;
+                var h = args.TryGetProperty("height", out var hv) ? hv.GetDouble() : (double)frame.Height;
+                NativeAppKit.SetWindowFrame(window.NativeWindow, x, y, w, h);
+            });
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:center", _ =>
+        {
+            NSApplication.SharedApplication.InvokeOnMainThread(() =>
+                window.NativeWindow?.Center());
+            return Task.FromResult<object?>(null);
         });
 
         // ── dialog ───────────────────────────────────────────────────────
