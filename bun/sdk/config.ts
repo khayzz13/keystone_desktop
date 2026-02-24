@@ -67,11 +67,25 @@ export type KeystoneRuntimeConfig = {
   /** Security */
   security?: {
     /**
+     * Action security mode.
+     * - "auto" (default): open in dev, allowlist in pre-built/package mode
+     * - "open": allow any action string
+     * - "allowlist": require action to match allowedActions (or framework defaults if empty)
+     */
+    mode?: "auto" | "open" | "allowlist";
+    /**
      * Allowlist of action strings web components may dispatch via keystone().action().
-     * If empty/undefined, all actions are permitted (open model).
      * Supports exact strings and prefix wildcards ending in "*" (e.g. "spawn:*").
+     * In allowlist mode, empty uses framework defaults for built-in window/app actions.
      */
     allowedActions?: string[];
+    /**
+     * Controls NDJSON eval requests from the C# host.
+     * - "auto" (default): enabled in dev, disabled in pre-built/package mode
+     * - true: always enabled
+     * - false: always disabled
+     */
+    allowEval?: "auto" | boolean;
   };
 };
 
@@ -86,7 +100,7 @@ const defaults: ResolvedConfig = {
   http: { enabled: true, hostname: "127.0.0.1" },
   watch: { extensions: [".ts", ".tsx", ".js", ".jsx"], debounceMs: 150 },
   health: { enabled: true, intervalMs: 30_000 },
-  security: { allowedActions: [] },
+  security: { mode: "auto", allowedActions: [], allowEval: "auto" },
 };
 
 /** Define your app's Keystone Desktop configuration. */

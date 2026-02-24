@@ -335,18 +335,34 @@ When a service's `health()` returns `{ ok: false }`, the runtime calls `stop()` 
 
 ```typescript
 security: {
+    // Action policy mode:
+    // "auto" (default) => open in dev, allowlist in pre-built/package mode
+    // "open" => allow any action string
+    // "allowlist" => require match against allowedActions (or framework defaults if empty)
+    mode: "auto",
+
     // Allowlist of actions the web layer may dispatch.
-    // Empty (default) = open model, all actions permitted.
     // Wildcards: "myapp:*" matches any action starting with "myapp:"
     allowedActions: [
         "window:minimize",
         "window:close",
         "myapp:*",
     ],
+
+    // Eval policy for C# -> Bun NDJSON "eval" messages.
+    // "auto" (default) => enabled in dev, disabled in pre-built/package mode.
+    allowEval: "auto",
 }
 ```
 
 This only applies to actions dispatched from web components via `action()` over the WebSocket. It does not affect `invoke()` calls (which go directly to C# via `WKScriptMessageHandler`) or actions dispatched from C# internally.
+
+Apps can inspect the effective runtime policy at any time:
+
+```typescript
+const security = await query("security");
+// { mode, allowEval, usingDefaultActionRules, allowedActions, preBuiltWeb }
+```
 
 ---
 
@@ -402,7 +418,9 @@ export default defineConfig({
     services: { hotReload: false },
     web: { hotReload: false },
     security: {
+        mode: "allowlist",
         allowedActions: ["window:minimize", "window:close", "myapp:*"],
+        allowEval: false,
     },
 });
 ```

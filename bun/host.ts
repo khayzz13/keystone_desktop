@@ -75,6 +75,51 @@ async function loadAppConfig(): Promise<ResolvedConfig> {
 
 const config = await loadAppConfig();
 
+// === Security policy ===
+
+const DEFAULT_ALLOWED_ACTION_RULES = [
+  "window:*",
+  "app:quit",
+  "shell:openExternal:*",
+];
+
+function matchActionRule(action: string, rule: string): boolean {
+  return rule.endsWith("*")
+    ? action.startsWith(rule.slice(0, -1))
+    : action === rule;
+}
+
+function resolveSecurityMode(): "open" | "allowlist" {
+  const mode = config.security.mode;
+  if (mode === "open" || mode === "allowlist") return mode;
+  // Auto mode: keep dev friction low, tighten packaged builds by default.
+  return config.web.preBuilt ? "allowlist" : "open";
+}
+
+function resolveAllowedActionRules(): string[] {
+  return config.security.allowedActions.length > 0
+    ? config.security.allowedActions
+    : DEFAULT_ALLOWED_ACTION_RULES;
+}
+
+function resolveEvalEnabled(): boolean {
+  const allowEval = config.security.allowEval;
+  if (allowEval === true || allowEval === false) return allowEval;
+  // Auto mode: eval enabled for local development, off by default for packaged builds.
+  return !config.web.preBuilt;
+}
+
+const effectiveSecurityMode = resolveSecurityMode();
+const effectiveAllowedActionRules = resolveAllowedActionRules();
+const effectiveAllowEval = resolveEvalEnabled();
+const usingDefaultActionRules = config.security.allowedActions.length === 0;
+
+console.error(
+  `[host] security mode=${effectiveSecurityMode} ` +
+  `eval=${effectiveAllowEval ? "enabled" : "disabled"} ` +
+  `actions=${usingDefaultActionRules ? "framework-defaults" : "config"}`
+);
+
 // === Registries ===
 
 const actionHandlers = new Map<string, (action: string) => void>();
@@ -215,6 +260,19 @@ function registerBuiltins() {
     temp: `/tmp`,
   };
   services.set("paths", { mod: null, query: () => paths, health: () => ({ ok: true }) });
+
+  // security — expose effective policy so apps can inspect what is active at runtime.
+  services.set("security", {
+    mod: null,
+    query: () => ({
+      mode: effectiveSecurityMode,
+      allowEval: effectiveAllowEval,
+      usingDefaultActionRules,
+      allowedActions: effectiveAllowedActionRules,
+      preBuiltWeb: config.web.preBuilt,
+    }),
+    health: () => ({ ok: true }),
+  });
 }
 
 // === Discovery ===
@@ -682,11 +740,8 @@ window.__ready=true;
 }
 
 function isActionAllowed(action: string): boolean {
-  const allowed = config.security.allowedActions;
-  if (!allowed || allowed.length === 0) return true; // open model
-  return allowed.some(rule =>
-    rule.endsWith("*") ? action.startsWith(rule.slice(0, -1)) : action === rule
-  );
+  if (effectiveSecurityMode === "open") return true;
+  return effectiveAllowedActionRules.some(rule => matchActionRule(action, rule));
 }
 
 async function handleWebMessage(ws: ServerWebSocket, type: string, data: any) {
@@ -700,7 +755,7 @@ async function handleWebMessage(ws: ServerWebSocket, type: string, data: any) {
   }
   if (type === "action" && data?.action) {
     if (!isActionAllowed(data.action)) {
-      console.error(`[host] blocked web action not in allowedActions: ${data.action}`);
+      console.error(`[host] blocked web action (${effectiveSecurityMode}): ${data.action}`);
       return;
     }
     for (const [, handler] of actionHandlers) handler(data.action);
@@ -841,8 +896,12 @@ if (config.health.enabled) {
         }
 
         else if (req.type === "eval") {
-          const result = await eval(req.code);
-          console.log(JSON.stringify({ id: req.id, result }));
+          if (!effectiveAllowEval) {
+            console.log(JSON.stringify({ id: req.id, error: "eval disabled by security policy" }));
+          } else {
+            const result = await eval(req.code);
+            console.log(JSON.stringify({ id: req.id, result }));
+          }
         }
 
       } catch (e: any) {

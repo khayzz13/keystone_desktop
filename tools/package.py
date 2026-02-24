@@ -133,7 +133,10 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
     plugin_mode = mode_override or build_cfg.get("pluginMode", "side-by-side")
     category = build_cfg.get("category", "public.app-category.utilities")
     out_dir = app_root / build_cfg.get("outDir", "dist")
-    signing_identity = build_cfg.get("signingIdentity")
+    signing_identity = build_cfg.get("signingIdentity") or os.environ.get("KEYSTONE_SIGNING_IDENTITY")
+    require_signing_identity = bool(build_cfg.get("requireSigningIdentity", False))
+    notarize = bool(build_cfg.get("notarize", False))
+    notary_profile = build_cfg.get("notaryProfile") or os.environ.get("KEYSTONE_NOTARY_PROFILE")
     create_dmg = dmg_override if dmg_override is not None else build_cfg.get("dmg", False)
     min_version = build_cfg.get("minimumSystemVersion", "15.0")
     extra_resources = build_cfg.get("extraResources", [])
@@ -547,16 +550,51 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
         entitlements_path = None
 
     identity = signing_identity or "-"
+    is_adhoc = identity == "-"
+
+    if require_signing_identity and is_adhoc:
+        print("  ERROR: requireSigningIdentity=true but no signing identity was configured.")
+        print("  Set build.signingIdentity or KEYSTONE_SIGNING_IDENTITY.")
+        sys.exit(1)
+
+    if notarize and is_adhoc:
+        print("  ERROR: Notarization requires a real Developer ID signing identity (ad-hoc '-' is not valid).")
+        print("  Set build.signingIdentity or KEYSTONE_SIGNING_IDENTITY.")
+        sys.exit(1)
+
+    if notarize and not notary_profile:
+        print("  ERROR: Notarization enabled but no notary profile configured.")
+        print("  Set build.notaryProfile or KEYSTONE_NOTARY_PROFILE (xcrun notarytool keychain profile name).")
+        sys.exit(1)
+
+    if is_adhoc:
+        print("  NOTE: Using ad-hoc signature ('-'). Suitable for local/dev, not trusted distribution.")
+
     sign_cmd = ["codesign", "--force", "--deep", "--sign", identity]
+    if not is_adhoc:
+        # Required for hardened runtime behavior expected in production distributions.
+        sign_cmd += ["--options", "runtime", "--timestamp"]
     if entitlements_path:
         sign_cmd += ["--entitlements", str(entitlements_path)]
     sign_cmd.append(str(bundle_path))
-    print(f"  Signing ({tier}, {'ad-hoc' if identity == '-' else identity})...")
+    print(f"  Signing ({tier}, {'ad-hoc' if is_adhoc else identity})...")
     run(sign_cmd)
+
+    # Verify signature integrity immediately after signing.
+    print("  Verifying signature...")
+    run(["codesign", "--verify", "--strict", "--deep", "--verbose=2", str(bundle_path)])
+    spctl_result = run(["spctl", "-a", "-t", "exec", "-vv", str(bundle_path)], check=False)
+    if not is_adhoc and spctl_result.returncode != 0:
+        print("  ERROR: Gatekeeper assessment failed for signed bundle.")
+        sys.exit(spctl_result.returncode or 1)
+    if is_adhoc and spctl_result.returncode != 0:
+        print("  NOTE: Gatekeeper rejected ad-hoc signature (expected for local/dev builds).")
+
     run(["xattr", "-dr", "com.apple.quarantine", str(bundle_path)], check=False)
 
     # ── 12. DMG ──────────────────────────────────────────────────────────────
 
+    dmg_path = None
     if create_dmg:
         dmg_path = out_dir / f"{safe_name}.dmg"
         if dmg_path.exists():
@@ -566,6 +604,22 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
              "-srcfolder", str(bundle_path), "-ov", "-format", "UDZO",
              str(dmg_path)])
         print(f"  DMG: {dmg_path}")
+
+    # ── 13. Optional notarization ────────────────────────────────────────────
+    # Notarize final distribution artifact when configured.
+    if notarize:
+        target = dmg_path if dmg_path else bundle_path
+        print(f"  Notarizing: {target.name} (profile={notary_profile})...")
+        run([
+            "xcrun", "notarytool", "submit", str(target),
+            "--keychain-profile", notary_profile,
+            "--wait",
+        ])
+        print(f"  Stapling ticket: {target.name}")
+        run(["xcrun", "stapler", "staple", str(target)])
+        if target != bundle_path:
+            # Best effort: staple app too when distributing inside a DMG.
+            run(["xcrun", "stapler", "staple", str(bundle_path)], check=False)
 
     # ── Done ─────────────────────────────────────────────────────────────────
 

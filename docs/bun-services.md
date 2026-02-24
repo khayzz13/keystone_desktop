@@ -334,11 +334,13 @@ The same paths are accessible from C# via `app:getPath` invoke handler.
 
 ## Security — Action Allowlisting
 
-By default, the web layer can dispatch any action string to C#. To restrict which actions are permitted, configure `allowedActions` in `keystone.config.ts`:
+The web layer action policy is controlled by `security.mode` in `keystone.config.ts`.
+Use `"allowlist"` (or `"auto"` in packaged mode) to restrict which actions are permitted:
 
 ```typescript
 export default defineConfig({
     security: {
+        mode: "allowlist",
         allowedActions: [
             "window:minimize",
             "window:maximize",
@@ -351,6 +353,13 @@ export default defineConfig({
 ```
 
 Actions not in the allowlist are logged and dropped before they reach C# or service action handlers. Invoke calls (`invoke()` via `WKScriptMessageHandler`) are not subject to this allowlist — they bypass Bun entirely.
+
+To inspect the effective policy at runtime:
+
+```typescript
+const security = await query("security");
+// { mode, allowEval, usingDefaultActionRules, allowedActions, preBuiltWeb }
+```
 
 ---
 

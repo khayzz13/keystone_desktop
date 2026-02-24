@@ -304,6 +304,9 @@ The `build` section is **write-only** (by packager) and **never read by runtime*
     "category": "public.app-category.finance",
     "outDir": "dist",
     "signingIdentity": null,
+    "requireSigningIdentity": false,
+    "notarize": false,
+    "notaryProfile": null,
     "dmg": false,
     "minimumSystemVersion": "15.0",
     "extraResources": []
@@ -317,6 +320,9 @@ The `build` section is **write-only** (by packager) and **never read by runtime*
 | `category` | string | "public.app-category.utilities" | macOS app category (LSApplicationCategoryType) |
 | `outDir` | string | "dist" | Output directory for packaged .app |
 | `signingIdentity` | string | null | Developer ID cert name (null = ad-hoc signature) |
+| `requireSigningIdentity` | bool | false | Fail packaging if no real signing identity is configured |
+| `notarize` | bool | false | Submit final artifact to Apple notarization via `xcrun notarytool` |
+| `notaryProfile` | string | null | Keychain profile name for `xcrun notarytool` (or `KEYSTONE_NOTARY_PROFILE`) |
 | `dmg` | bool | false | Create DMG after packaging |
 | `minimumSystemVersion` | string | "15.0" | Minimum macOS version (LSMinimumSystemVersion) |
 | `extraResources` | array | [] | Additional directories/files to copy into Resources/ |
@@ -373,6 +379,9 @@ The `build` section is **write-only** (by packager) and **never read by runtime*
     "category": "public.app-category.finance",
     "outDir": "dist",
     "signingIdentity": null,
+    "requireSigningIdentity": false,
+    "notarize": false,
+    "notaryProfile": null,
     "dmg": false
   }
 }
@@ -517,9 +526,11 @@ The packager executes these steps in order:
 12. **Icon Directory** — Copy full `icons/` tree
 13. **Runtime Config** — Generate `Resources/keystone.config.json` (stripped + transformed) and `Resources/bun/keystone.resolved.json` (pre-resolved Bun config with all defaults applied)
 14. **Entitlements** — Hardened runtime base, patch in external-signatures if needed
-15. **Code Signing** — `codesign --deep --sign` with selected identity + entitlements
-16. **Quarantine Flag** — Remove `com.apple.quarantine` attribute
-17. **DMG** — Optionally create DMG volume
+15. **Code Signing** — `codesign --deep --sign` with selected identity + entitlements (`--options runtime --timestamp` for non-ad-hoc signing)
+16. **Signature Verification** — `codesign --verify --strict --deep` + Gatekeeper assessment (`spctl`)
+17. **Quarantine Flag** — Remove `com.apple.quarantine` attribute
+18. **DMG** — Optionally create DMG volume
+19. **Notarization** — Optional `xcrun notarytool submit --wait` + `xcrun stapler staple`
 
 ### CLI Flags
 
@@ -1253,7 +1264,19 @@ Error: The identity used to sign the bundle is not valid.
 **Solution:**
 - For development: use ad-hoc `-` (default)
 - For distribution: specify cert ID: `--engine ... --mode bundled` + valid `signingIdentity` in config
+- For strict release workflows: set `build.requireSigningIdentity: true`
 - List available certs: `security find-identity -v -p codesigning`
+
+### Notarization Setup Issues
+
+```
+ERROR: Notarization enabled but no notary profile configured.
+```
+
+**Solution:**
+- Create a keychain profile once: `xcrun notarytool store-credentials <profile-name> ...`
+- Set `build.notaryProfile` or `KEYSTONE_NOTARY_PROFILE`
+- Enable `build.notarize: true`
 
 ### Plugins Not Loading at Runtime
 
@@ -1424,4 +1447,3 @@ The Keystone Desktop build system provides:
 - **Safe signing** — Hardened runtime entitlements, ad-hoc by default
 
 For most apps: scaffold with `create-app.py`, edit `build.py` as needed, then package with `--mode bundled` for distribution.
-

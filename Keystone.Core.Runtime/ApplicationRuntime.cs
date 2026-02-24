@@ -926,12 +926,11 @@ public class ApplicationRuntime : ICoreContext
         }
 
         // IOSurface orphan detection — if unaccounted memory exceeds 200MB,
-        // purge all GPU caches and force GC to reclaim stale IOSurfaces
-        // this is a hack to work around persistant memory leak problems stemming from
-        // IOSurfaces that do not get released properly among a wide range of cases
-        // this simply tells them to fuck off and die, which is effective at keeping memory
-        // usage in check, though it would be nice to fix any loose ends if they still exist
-        // This also should be more configureable CHORE
+        // purge all GPU caches and force GC to reclaim stale IOSurfaces.
+        // This is an intentionally aggressive cleanup hammer for persistent
+        // IOSurface leaks that can survive multiple resize/teardown paths.
+        // It keeps memory usage bounded for now; root-cause fixes are still needed.
+        // TODO: make threshold/behavior configurable.
         long expectedTotal = 0;
         long cacheTotal = 0;
         foreach (var w in windows)

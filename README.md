@@ -166,7 +166,7 @@ Desktop frameworks typically require a constellation of packages to cover basic 
 | Live data streaming | `subscribe(channel)` — pub/sub across all three processes |
 | Hot module replacement | Automatic — save a file, Bun rebundles, slot reloads |
 | Process crash recovery | Auto-restart with exponential backoff, configurable in `keystone.json` |
-| Code signing & notarization | `build.py --package` handles signing, entitlements, and notarization |
+| Code signing & release trust | `build.py --package` handles signing, entitlements, signature verification, and optional notarization (`build.notarize`) |
 | Bundling | Bun's built-in bundler — no webpack, vite, or esbuild config |
 | Menu system | Declared in `keystone.json`, wired to actions automatically |
 | Theme sync | System theme changes pushed to all windows in real-time |

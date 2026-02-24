@@ -10,3 +10,6 @@ build:
   # pluginMode: side-by-side    # side-by-side (default) or bundled
   # dmg: false                  # create DMG alongside .app
   # signingIdentity: "-"        # codesign identity (- = ad-hoc)
+  # requireSigningIdentity: false # fail packaging if signingIdentity is missing/adhoc
+  # notarize: false             # submit final artifact to Apple notarization
+  # notaryProfile: "my-profile" # xcrun notarytool keychain profile name
