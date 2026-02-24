@@ -169,6 +169,10 @@ public class KeystoneConfig
             if (window.Renderless && string.Equals(window.TitleBarStyle, "toolkit", StringComparison.OrdinalIgnoreCase))
                 ThrowInvalid(path, $"'{prefix}.renderless' cannot be used with titleBarStyle \"toolkit\" — toolkit requires GPU rendering");
 
+            // headless implies renderless; silently enforce it
+            if (window.Headless)
+                window.Renderless = true;
+
             if (window.Toolbar?.Items == null) continue;
             for (var j = 0; j < window.Toolbar.Items.Count; j++)
             {
@@ -380,6 +384,16 @@ public class WindowConfig
     /// </summary>
     [JsonPropertyName("renderless")]
     public bool Renderless { get; set; } = false;
+
+    /// <summary>
+    /// Headless mode: creates an invisible native window with a WebKit view, never shown on screen.
+    /// Implies renderless (no GPU surface is allocated). Use for background JS execution,
+    /// scripted rendering, PDF capture, or test harnesses. Spawn: true is ignored —
+    /// headless windows must be opened programmatically via window:open.
+    /// Interact via headless:evaluate and headless:close invoke channels.
+    /// </summary>
+    [JsonPropertyName("headless")]
+    public bool Headless { get; set; } = false;
 }
 
 public class ToolbarConfig

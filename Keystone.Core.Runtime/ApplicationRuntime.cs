@@ -148,6 +148,15 @@ public class ApplicationRuntime : ICoreContext
         _platform.SetWindowListProvider(() => _windowManager.GetWindowsForDockMenu());
         _platform.InitializeMenu(action => _actionRouter.Execute(action, "menu"), _config);
 
+        // 3b. Global shortcuts
+#if MACOS
+        GlobalShortcutManager.Initialize(new Keystone.Core.Platform.MacOS.MacOSGlobalShortcut());
+#elif WINDOWS
+        GlobalShortcutManager.Initialize(new Keystone.Core.Platform.Windows.WindowsGlobalShortcut());
+#else
+        GlobalShortcutManager.Initialize(new Keystone.Core.Platform.Linux.LinuxGlobalShortcut());
+#endif
+
         // 4. App assembly — loaded into default ALC before plugins for type visibility
         if (_config.AppAssembly != null)
             LoadAppAssembly(Path.Combine(_rootDir, _config.AppAssembly));
@@ -584,6 +593,7 @@ public class ApplicationRuntime : ICoreContext
         try { _windowManager.SaveWorkspace("__autosave"); }
         catch (Exception ex) { Console.WriteLine($"[ApplicationRuntime] Autosave failed: {ex.Message}"); Notifications.Error($"Autosave failed: {ex.Message}"); }
 
+        GlobalShortcutManager.Shutdown();
         _cancellation.Cancel();
         BunWorkerManager.Instance.StopAll();
         BunManager.Instance.Shutdown();
@@ -638,14 +648,18 @@ public class ApplicationRuntime : ICoreContext
         var x = sx + (sw - defaultW) / 2;
         var y = sy + (sh - defaultH) / 2;
 
-        var config = new Platform.WindowConfig(x, y, defaultW, defaultH, floating, titleBarStyle, winCfg?.Renderless ?? false);
+        var headless = winCfg?.Headless ?? false;
+        var renderless = headless || (winCfg?.Renderless ?? false);
+        var config = new Platform.WindowConfig(x, y, defaultW, defaultH, floating, titleBarStyle, renderless, headless);
         var nativeWindow = _platform.CreateWindow(config);
 
         var managedWindow = CreateWindow(plugin);
         managedWindow.AlwaysOnTop = floating;
         RegisterWindow(managedWindow, nativeWindow);
 
-        nativeWindow.Show();
+        // Headless windows are never shown — they run their WebView silently.
+        if (!headless)
+            nativeWindow.Show();
 
         RegisterBuiltinInvokeHandlers(managedWindow);
         Console.WriteLine($"[ApplicationRuntime] Spawned {windowType} window id={managedWindow.Id} titleBarStyle={titleBarStyle}");
@@ -928,6 +942,148 @@ public class ApplicationRuntime : ICoreContext
             {
                 return Task.FromResult<object?>(false);
             }
+        });
+
+        // ── clipboard ─────────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("clipboard:readText", _ =>
+            Task.FromResult<object?>(_platform.ClipboardReadText()));
+
+        window.RegisterInvokeHandler("clipboard:writeText", args =>
+        {
+            var text = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                       args.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+            _platform.ClipboardWriteText(text);
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("clipboard:clear", _ =>
+        {
+            _platform.ClipboardClear();
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("clipboard:hasText", _ =>
+            Task.FromResult<object?>(_platform.ClipboardHasText()));
+
+        // ── screen ────────────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("screen:getAllDisplays", _ =>
+        {
+            var displays = _platform.GetAllDisplays().Select(d => new
+            {
+                x = d.X, y = d.Y, width = d.Width, height = d.Height,
+                scaleFactor = d.ScaleFactor, primary = d.IsPrimary
+            });
+            return Task.FromResult<object?>(displays);
+        });
+
+        window.RegisterInvokeHandler("screen:getPrimaryDisplay", _ =>
+        {
+            var d = _platform.GetAllDisplays().FirstOrDefault(x => x.IsPrimary)
+                    ?? _platform.GetAllDisplays().FirstOrDefault();
+            if (d == null) return Task.FromResult<object?>(null);
+            return Task.FromResult<object?>(new
+            {
+                x = d.X, y = d.Y, width = d.Width, height = d.Height,
+                scaleFactor = d.ScaleFactor, primary = d.IsPrimary
+            });
+        });
+
+        window.RegisterInvokeHandler("screen:getCursorScreenPoint", _ =>
+        {
+            var (mx, my) = _platform.GetMouseLocation();
+            return Task.FromResult<object?>(new { x = mx, y = my });
+        });
+
+        // ── nativeTheme ───────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("nativeTheme:isDarkMode", _ =>
+            Task.FromResult<object?>(_platform.IsDarkMode()));
+
+        // ── powerMonitor ──────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("powerMonitor:getStatus", _ =>
+        {
+            var s = _platform.GetPowerStatus();
+            return Task.FromResult<object?>(new { onBattery = s.OnBattery, batteryPercent = s.BatteryPercent });
+        });
+
+        // ── notification ──────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("notification:show", async args =>
+        {
+            var title = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                        args.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+            var body = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                       args.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
+            await _platform.ShowOsNotification(title, body);
+            return (object?)null;
+        });
+
+        // ── globalShortcut ────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("globalShortcut:register", args =>
+        {
+            var acc = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                      args.TryGetProperty("accelerator", out var a) ? a.GetString() : null;
+            if (string.IsNullOrEmpty(acc)) return Task.FromResult<object?>(false);
+            return Task.FromResult<object?>(GlobalShortcutManager.Register(acc, windowId));
+        });
+
+        window.RegisterInvokeHandler("globalShortcut:unregister", args =>
+        {
+            var acc = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                      args.TryGetProperty("accelerator", out var a) ? a.GetString() : null;
+            if (!string.IsNullOrEmpty(acc)) GlobalShortcutManager.Unregister(acc);
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("globalShortcut:isRegistered", args =>
+        {
+            var acc = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                      args.TryGetProperty("accelerator", out var a) ? a.GetString() : null;
+            return Task.FromResult<object?>(
+                !string.IsNullOrEmpty(acc) && GlobalShortcutManager.IsRegistered(acc));
+        });
+
+        // ── headless ──────────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("headless:list", _ =>
+        {
+            var ids = _windowManager.GetAllWindows()
+                .Where(w => _config.Windows.FirstOrDefault(c => c.Component == w.WindowType)?.Headless ?? false)
+                .Select(w => w.Id)
+                .ToArray();
+            return Task.FromResult<object?>(ids);
+        });
+
+        window.RegisterInvokeHandler("headless:evaluate", args =>
+        {
+            var targetId = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                           args.TryGetProperty("windowId", out var wid) ? wid.GetString() : null;
+            var js = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                     args.TryGetProperty("js", out var j) ? j.GetString() : null;
+            if (string.IsNullOrEmpty(targetId) || string.IsNullOrEmpty(js))
+                return Task.FromResult<object?>(null);
+
+            var target = _windowManager.GetWindow(targetId);
+            if (target == null) return Task.FromResult<object?>(null);
+
+            // Fire-and-forget: EvaluateJavaScript on IWebView is void.
+            // Use the void overload; callers that need return values should
+            // have the headless window push results via BunManager channel.
+            RunOnMainThread(() => target.EvaluateJavaScript(js));
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("headless:close", args =>
+        {
+            var targetId = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                           args.TryGetProperty("windowId", out var wid) ? wid.GetString() : null;
+            if (!string.IsNullOrEmpty(targetId))
+                RunOnMainThread(() => _windowManager.CloseWindow(targetId));
+            return Task.FromResult<object?>(null);
         });
 
         // ── http ──────────────────────────────────────────────────────────

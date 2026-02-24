@@ -203,6 +203,135 @@ public class LinuxPlatform : IPlatform
         Process.Start(new ProcessStartInfo("xdg-open", path) { UseShellExecute = false });
     }
 
+    // ── Clipboard ──────────────────────────────────────────────────────────────
+    // Uses wl-paste/wl-copy (Wayland) or xclip (X11) subprocess.
+
+    public string? ClipboardReadText()
+    {
+        // Wayland first
+        var result = RunClipboardSubprocess("wl-paste", "--no-newline");
+        if (result != null) return result;
+        // X11 fallback
+        return RunClipboardSubprocess("xclip", "-selection clipboard -o");
+    }
+
+    public void ClipboardWriteText(string text)
+    {
+        if (!WriteToClipboardSubprocess("wl-copy", text))
+            WriteToClipboardSubprocess("xclip", "-selection clipboard", text);
+    }
+
+    public void ClipboardClear() => ClipboardWriteText("");
+
+    public bool ClipboardHasText() => ClipboardReadText() is { Length: > 0 };
+
+    private static string? RunClipboardSubprocess(string program, string args)
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo(program, args)
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false });
+            if (proc == null) return null;
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit();
+            return proc.ExitCode == 0 && output.Length > 0 ? output : null;
+        }
+        catch { return null; }
+    }
+
+    private static bool WriteToClipboardSubprocess(string program, string args, string text = "")
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo(program, args)
+                { RedirectStandardInput = true, UseShellExecute = false });
+            if (proc == null) return false;
+            proc.StandardInput.Write(text);
+            proc.StandardInput.Close();
+            proc.WaitForExit();
+            return proc.ExitCode == 0;
+        }
+        catch { return false; }
+    }
+
+    // ── Screen ─────────────────────────────────────────────────────────────────
+
+    public IReadOnlyList<DisplayInfo> GetAllDisplays()
+    {
+        var result = new List<DisplayInfo>();
+        var display = Gdk.DisplayGetDefault();
+        if (display == IntPtr.Zero) return result;
+        var monitors = Gdk.DisplayGetMonitors(display);
+        if (monitors == IntPtr.Zero) return result;
+        var count = GLib.ListModelGetNItems(monitors);
+        for (uint i = 0; i < count; i++)
+        {
+            var monitor = GLib.ListModelGetItem(monitors, i);
+            if (monitor == IntPtr.Zero) continue;
+            Gdk.MonitorGetGeometry(monitor, out var rect);
+            var scale = Gdk.MonitorGetScaleFactor(monitor);
+            result.Add(new DisplayInfo(rect.X, rect.Y, rect.Width, rect.Height, scale, i == 0));
+        }
+        return result;
+    }
+
+    // ── System state ───────────────────────────────────────────────────────────
+
+    public bool IsDarkMode()
+    {
+        // Check XDG_CURRENT_DESKTOP + portal color-scheme first
+        var scheme = Environment.GetEnvironmentVariable("GTK_THEME");
+        if (scheme != null && scheme.Contains("dark", StringComparison.OrdinalIgnoreCase))
+            return true;
+        // Try reading the GSettings key used by GNOME/KDE
+        try
+        {
+            var result = RunClipboardSubprocess("gsettings",
+                "get org.gnome.desktop.interface color-scheme");
+            if (result != null && result.Contains("dark", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        catch { }
+        return false;
+    }
+
+    public PowerStatus GetPowerStatus()
+    {
+        try
+        {
+            const string supplyDir = "/sys/class/power_supply";
+            if (!Directory.Exists(supplyDir)) return new PowerStatus(false, -1);
+            foreach (var dir in Directory.GetDirectories(supplyDir))
+            {
+                var typePath = Path.Combine(dir, "type");
+                if (!File.Exists(typePath)) continue;
+                if (File.ReadAllText(typePath).Trim() != "Battery") continue;
+                var status = File.ReadAllText(Path.Combine(dir, "status")).Trim();
+                var capacityPath = Path.Combine(dir, "capacity");
+                var pct = File.Exists(capacityPath) &&
+                          int.TryParse(File.ReadAllText(capacityPath).Trim(), out var p) ? p : -1;
+                return new PowerStatus(status != "Charging" && status != "Full", pct);
+            }
+        }
+        catch { }
+        return new PowerStatus(false, -1);
+    }
+
+    // ── Notifications ──────────────────────────────────────────────────────────
+
+    public async Task ShowOsNotification(string title, string body)
+    {
+        try
+        {
+            var t = title.Replace("\"", "\\\"");
+            var b = body.Replace("\"", "\\\"");
+            using var proc = Process.Start(new ProcessStartInfo("notify-send",
+                $"\"{t}\" \"{b}\"") { UseShellExecute = false });
+            if (proc != null) await proc.WaitForExitAsync();
+        }
+        catch { }
+    }
+
     public void InitializeMenu(Action<string> onMenuAction, KeystoneConfig? config = null)
     {
         _onMenuAction = onMenuAction;
@@ -455,6 +584,9 @@ internal static class Gdk
 
     [DllImport(Lib, EntryPoint = "gdk_surface_get_scale_factor")]
     public static extern int SurfaceGetScaleFactor(IntPtr surface);
+
+    [DllImport(Lib, EntryPoint = "gdk_monitor_get_scale_factor")]
+    public static extern int MonitorGetScaleFactor(IntPtr monitor);
 }
 
 internal static class GLib
@@ -481,6 +613,9 @@ internal static class GLib
     [DllImport(GioLib, EntryPoint = "g_file_get_path")]
     [return: MarshalAs(UnmanagedType.LPUTF8Str)]
     public static extern string? FileGetPath(IntPtr file);
+
+    [DllImport(GioLib, EntryPoint = "g_list_model_get_n_items")]
+    public static extern uint ListModelGetNItems(IntPtr list);
 
     [DllImport(GioLib, EntryPoint = "g_list_model_get_item")]
     public static extern IntPtr ListModelGetItem(IntPtr list, uint position);

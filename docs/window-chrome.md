@@ -1,6 +1,6 @@
 # Window Chrome
 
-> **Platform note:** This document describes window chrome behavior with a focus on macOS (AppKit/NSWindow). On Linux (GTK4), Keystone provides equivalent window management — native window decorations, title bar styles, floating window levels, and GPU-rendered chrome — using GTK4 window APIs. The configuration surface (`titleBarStyle`, `floating`, `nativeWindow.*`) is the same on both platforms; visual details follow each platform's native conventions.
+> **Platform note:** This document describes window chrome behavior with a focus on macOS (AppKit/NSWindow). On Linux (GTK4) and Windows (Win32), Keystone provides equivalent window management — native window decorations, title bar styles, floating window levels, and GPU-rendered chrome. The configuration surface (`titleBarStyle`, `floating`, `renderless`) is the same on all platforms; visual details follow each platform's native conventions.
 
 By default Keystone windows use a native titled window with a transparent title bar — your web component fills the entire frame, native window controls (close/minimize/zoom on macOS, GTK4 decorations on Linux) appear at the standard position, and the window gets compositor-level rounded corners where the platform supports it. This is the right choice for most apps.
 
@@ -130,6 +130,20 @@ const isFloating = await nativeWindow.isFloating();
 On macOS, the compositor handles rounded corners at the native level for titled windows. With the default `"hidden"` style, the native window still has rounded corners — your web content is clipped to that shape automatically. With `"toolkit"` or `"none"` (borderless), macOS does not provide compositor-level rounding.
 
 On Linux, rounded corners depend on the compositor (e.g. Mutter/GNOME, KWin/KDE). Keystone doesn't override compositor-managed rounding.
+
+On Windows, rounded corners are controlled by the DWM (Desktop Window Manager) and are on by default for modern windows (Windows 11+). Borderless windows (`"none"`) are sharp-cornered unless you explicitly apply a DWM corner preference.
+
+#### GPU-rendered corner radius (`Theme.CornerRadius`)
+
+For windows that use GPU/Skia rendering (`titleBarStyle: "toolkit"` or native `IWindowPlugin` windows), the Toolkit layer applies rounded corners to all drawn elements via `Theme.CornerRadius`. This is separate from the OS compositor corner — it controls the radius used for panels, buttons, cards, and other nodes rendered by the Flex/Skia pipeline.
+
+The default is `4f`. Override it at app startup to retheme all Toolkit components globally:
+
+```csharp
+Theme.CornerRadius = 8f;  // rounder — set before first frame
+```
+
+This affects every Toolkit component that uses `BgRadius` (panels, cards, title bar buttons, etc.). It does not affect web content or the OS-level window corner.
 
 ### Fullscreen and zoom
 

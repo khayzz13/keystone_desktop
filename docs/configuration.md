@@ -33,7 +33,8 @@ Lives at the root of your app directory. The host searches `keystone.config.json
       "height": 700,
       "spawn": true,          // open this window on launch
       "titleBarStyle": "hidden",  // "hidden" (default), "toolkit", or "none"
-      "floating": false       // always-on-top (default: false)
+      "floating": false,      // always-on-top (default: false)
+      "renderless": false     // skip GPU/Skia entirely for web-only windows (default: false)
     }
   ],
 
@@ -139,8 +140,36 @@ Each entry in `windows` declares a component type the runtime knows about. The `
 | `spawn` | bool | true | Open on launch |
 | `titleBarStyle` | string | `"hidden"` | `"hidden"` = native traffic lights + full-bleed web; `"toolkit"` = GPU title bar with tabs/float; `"none"` = frameless |
 | `floating` | bool | false | Always-on-top |
+| `renderless` | bool | false | Skip GPU context and render thread entirely. Use for web-only windows. |
 
 See [Window Chrome](./window-chrome.md) for detailed behavior of each `titleBarStyle` mode.
+
+#### `renderless`
+
+When `true`, the window skips GPU context creation and Skia render thread startup entirely. The window is a native shell with a full-window web view — no Metal/Vulkan/D3D12 surface is allocated, no render thread is started.
+
+Use this for windows that only show web content and never use native GPU rendering:
+
+```jsonc
+{
+  "component": "settings",
+  "width": 800,
+  "height": 600,
+  "renderless": true
+}
+```
+
+Trade-offs:
+
+| | Normal window | Renderless window |
+|-|---------------|-------------------|
+| GPU surface | Metal/Vulkan/D3D12 swap chain per window | None |
+| Memory per window | +30–60 MB (GPU context + buffers) | Baseline only |
+| Native rendering | ✓ Skia canvas available | ✗ GPU rendering unavailable |
+| `titleBarStyle: "toolkit"` | ✓ | ✗ (requires GPU render thread) |
+| Web content | ✓ | ✓ |
+
+`renderless` is incompatible with `titleBarStyle: "toolkit"`. Setting both is a config validation error.
 
 Windows with `spawn: false` can be opened programmatically:
 ```typescript

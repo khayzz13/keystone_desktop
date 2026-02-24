@@ -442,6 +442,119 @@ export const shell = {
   openPath: (path: string): Promise<boolean> => keystone().invoke('shell:openPath', { path }),
 };
 
+// === New API namespaces ===
+
+export type DisplayInfo = {
+  x: number; y: number; width: number; height: number;
+  scaleFactor: number; primary: boolean;
+};
+
+export type PowerStatus = {
+  /** true when running on battery (false on AC or when status is unknown) */
+  onBattery: boolean;
+  /** 0–100, or -1 when unknown (desktop / AC-only hardware) */
+  batteryPercent: number;
+};
+
+export const clipboard = {
+  /** Read plain text from the system clipboard. Returns null if empty. */
+  readText: (): Promise<string | null> => keystone().invoke('clipboard:readText'),
+  /** Write plain text to the system clipboard. */
+  writeText: (text: string): Promise<void> => keystone().invoke('clipboard:writeText', { text }),
+  /** Clear the clipboard. */
+  clear: (): Promise<void> => keystone().invoke('clipboard:clear'),
+  /** Returns true if the clipboard has text content. */
+  hasText: (): Promise<boolean> => keystone().invoke('clipboard:hasText'),
+};
+
+export const screen = {
+  /** Returns info for all connected displays. */
+  getAllDisplays: (): Promise<DisplayInfo[]> => keystone().invoke('screen:getAllDisplays'),
+  /** Returns the primary (main) display. */
+  getPrimaryDisplay: (): Promise<DisplayInfo> => keystone().invoke('screen:getPrimaryDisplay'),
+  /** Returns the current cursor position in screen coordinates. */
+  getCursorScreenPoint: (): Promise<{ x: number; y: number }> =>
+    keystone().invoke('screen:getCursorScreenPoint'),
+};
+
+export const notification = {
+  /**
+   * Show an OS-level notification.
+   * macOS: osascript display notification. Linux: notify-send. Windows: MessageBox (full tray support planned).
+   */
+  show: (title: string, body: string): Promise<void> =>
+    keystone().invoke('notification:show', { title, body }),
+};
+
+export const nativeTheme = {
+  /** Returns true when the system is in dark mode. */
+  isDarkMode: (): Promise<boolean> => keystone().invoke('nativeTheme:isDarkMode'),
+  /**
+   * Subscribe to system theme changes.
+   * The callback fires immediately with the current value, then on every change.
+   * Returns an unsubscribe function.
+   */
+  onChange: (cb: (dark: boolean) => void): (() => void) =>
+    keystone().subscribe('__nativeTheme__', (data: any) => cb(!!data?.dark)),
+};
+
+export const powerMonitor = {
+  /** Returns the current power state: AC/battery and battery percentage. */
+  getStatus: (): Promise<PowerStatus> => keystone().invoke('powerMonitor:getStatus'),
+  /**
+   * Subscribe to power state changes pushed by C#.
+   * Returns an unsubscribe function.
+   */
+  onChange: (cb: (status: PowerStatus) => void): (() => void) =>
+    keystone().subscribe('__powerMonitor__', cb),
+};
+
+export const globalShortcut = {
+  /**
+   * Register a process-wide keyboard shortcut.
+   * Accelerator format: "CommandOrControl+Shift+P", "Alt+F4", "F5", etc.
+   * Returns true if registered successfully (false if already taken by another process,
+   * or unsupported on this platform).
+   */
+  register: (accelerator: string): Promise<boolean> =>
+    keystone().invoke('globalShortcut:register', { accelerator }),
+  /** Unregister a previously registered shortcut. */
+  unregister: (accelerator: string): Promise<void> =>
+    keystone().invoke('globalShortcut:unregister', { accelerator }),
+  /** Returns true if this accelerator is registered by this process. */
+  isRegistered: (accelerator: string): Promise<boolean> =>
+    keystone().invoke('globalShortcut:isRegistered', { accelerator }),
+  /**
+   * Subscribe to a specific shortcut firing.
+   * Must call register() first.
+   * Returns an unsubscribe function.
+   */
+  onFired: (accelerator: string, cb: () => void): (() => void) =>
+    keystone().subscribe(`globalShortcut:${accelerator}`, cb),
+};
+
+export const headless = {
+  /**
+   * Open a headless (invisible) window running the given registered component.
+   * The window loads its WebKit view but is never shown on screen.
+   * Returns the new window's ID for use with evaluate() and close().
+   */
+  open: (component: string): Promise<string> =>
+    keystone().invoke('window:open', { type: component }),
+  /**
+   * Execute JavaScript in a headless window's WebView context (fire-and-forget).
+   * To receive results, have the headless window push to a BunManager channel
+   * via `subscribe()` from within the window's web component.
+   */
+  evaluate: (windowId: string, js: string): Promise<void> =>
+    keystone().invoke('headless:evaluate', { windowId, js }),
+  /** List all currently running headless window IDs. */
+  list: (): Promise<string[]> => keystone().invoke('headless:list'),
+  /** Close a headless window by ID. */
+  close: (windowId: string): Promise<void> =>
+    keystone().invoke('headless:close', { windowId }),
+};
+
 // Convenience re-exports
 export const action = (a: string) => keystone().action(a);
 export const subscribe = (ch: string, cb: (data: any) => void) => keystone().subscribe(ch, cb);

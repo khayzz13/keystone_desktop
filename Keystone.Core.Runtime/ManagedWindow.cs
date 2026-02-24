@@ -334,6 +334,12 @@ public class ManagedWindow : IDisposable
     public bool ShouldRender() => _needsRedraw;
 
     /// <summary>
+    /// Execute JavaScript in this window's host WebView (fire-and-forget).
+    /// For headless windows, this evaluates the script in the invisible WebKit context.
+    /// </summary>
+    public void EvaluateJavaScript(string js) => _hostWebView?.EvaluateJavaScript(js);
+
+    /// <summary>
     /// Render on the per-window thread using its own GpuContext.
     /// Called by WindowRenderThread.
     /// </summary>

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using AppKit;
 using CoreAnimation;
@@ -170,6 +171,75 @@ public class MacOSPlatform : IPlatform
 
     public void OpenPath(string path)
         => NSWorkspace.SharedWorkspace.OpenFile(path);
+
+    // ── Clipboard ──────────────────────────────────────────────────────────────
+
+    public string? ClipboardReadText()
+        => NSPasteboard.GeneralPasteboard.GetStringForType("public.utf8-plain-text");
+
+    public void ClipboardWriteText(string text)
+    {
+        var pb = NSPasteboard.GeneralPasteboard;
+        pb.ClearContents();
+        pb.SetStringForType(text, "public.utf8-plain-text");
+    }
+
+    public void ClipboardClear()
+        => NSPasteboard.GeneralPasteboard.ClearContents();
+
+    public bool ClipboardHasText()
+        => NSPasteboard.GeneralPasteboard.GetStringForType("public.utf8-plain-text") != null;
+
+    // ── Screen ─────────────────────────────────────────────────────────────────
+
+    public IReadOnlyList<DisplayInfo> GetAllDisplays()
+        => NSScreen.Screens.Select(s => new DisplayInfo(
+            (double)s.Frame.X, (double)s.Frame.Y,
+            (double)s.Frame.Width, (double)s.Frame.Height,
+            (double)s.BackingScaleFactor,
+            s == NSScreen.MainScreen)).ToList();
+
+    // ── System state ───────────────────────────────────────────────────────────
+
+    public bool IsDarkMode()
+    {
+        var name = NSApplication.SharedApplication.EffectiveAppearance.Name;
+        return name != null && name.Contains("Dark", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public PowerStatus GetPowerStatus()
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo("pmset", "-g ps")
+                { RedirectStandardOutput = true, UseShellExecute = false });
+            var output = proc?.StandardOutput.ReadToEnd() ?? "";
+            var onBattery = output.Contains("Battery Power");
+            var m = System.Text.RegularExpressions.Regex.Match(output, @"(\d+)%");
+            return new PowerStatus(onBattery, m.Success ? int.Parse(m.Groups[1].Value) : -1);
+        }
+        catch { return new PowerStatus(false, -1); }
+    }
+
+    // ── Notifications ──────────────────────────────────────────────────────────
+
+    public Task ShowOsNotification(string title, string body)
+    {
+        NSApplication.SharedApplication.InvokeOnMainThread(() =>
+        {
+            try
+            {
+                // Use osascript so we don't need UNUserNotificationCenter entitlements
+                var t = title.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                var b = body.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                Process.Start(new ProcessStartInfo("osascript",
+                    $"-e 'display notification \"{b}\" with title \"{t}\"'")
+                { UseShellExecute = false });
+            }
+            catch { }
+        });
+        return Task.CompletedTask;
+    }
 
     public void InitializeMenu(Action<string> onMenuAction, KeystoneConfig? config = null)
         => MainMenuFactory.Initialize(onMenuAction, config);

@@ -205,6 +205,104 @@ public class WindowsPlatform : IPlatform
         Win32.ShellExecute(IntPtr.Zero, "open", path, null, null, 1);
     }
 
+    // ── Clipboard ──────────────────────────────────────────────────────────────
+
+    public string? ClipboardReadText()
+    {
+        if (!Win32.OpenClipboard(IntPtr.Zero)) return null;
+        try
+        {
+            var handle = Win32.GetClipboardData(Win32.CF_UNICODETEXT);
+            if (handle == IntPtr.Zero) return null;
+            var ptr = Win32.GlobalLock(handle);
+            if (ptr == IntPtr.Zero) return null;
+            try { return Marshal.PtrToStringUni(ptr); }
+            finally { Win32.GlobalUnlock(handle); }
+        }
+        finally { Win32.CloseClipboard(); }
+    }
+
+    public void ClipboardWriteText(string text)
+    {
+        if (!Win32.OpenClipboard(IntPtr.Zero)) return;
+        try
+        {
+            Win32.EmptyClipboard();
+            var bytes = (text.Length + 1) * 2;
+            var handle = Win32.GlobalAlloc(0x0042 /* GMEM_MOVEABLE | GMEM_ZEROINIT */, (UIntPtr)bytes);
+            var ptr = Win32.GlobalLock(handle);
+            try { Marshal.Copy(text.ToCharArray(), 0, ptr, text.Length); }
+            finally { Win32.GlobalUnlock(handle); }
+            Win32.SetClipboardData(Win32.CF_UNICODETEXT, handle);
+        }
+        finally { Win32.CloseClipboard(); }
+    }
+
+    public void ClipboardClear()
+    {
+        if (Win32.OpenClipboard(IntPtr.Zero))
+        {
+            Win32.EmptyClipboard();
+            Win32.CloseClipboard();
+        }
+    }
+
+    public bool ClipboardHasText()
+        => Win32.IsClipboardFormatAvailable(Win32.CF_UNICODETEXT);
+
+    // ── Screen ─────────────────────────────────────────────────────────────────
+
+    public IReadOnlyList<DisplayInfo> GetAllDisplays()
+    {
+        var displays = new List<DisplayInfo>();
+        Win32.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero,
+            (hMonitor, _, _, _) =>
+            {
+                var info = new Win32.MONITORINFOEX { cbSize = (uint)Marshal.SizeOf<Win32.MONITORINFOEX>() };
+                if (Win32.GetMonitorInfo(hMonitor, ref info))
+                {
+                    var r = info.rcMonitor;
+                    displays.Add(new DisplayInfo(
+                        r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top,
+                        1.0 /* DPI-aware scaling handled per-window */,
+                        (info.dwFlags & 0x00000001) != 0 /* MONITORINFOF_PRIMARY */));
+                }
+                return true;
+            }, IntPtr.Zero);
+        return displays;
+    }
+
+    // ── System state ───────────────────────────────────────────────────────────
+
+    public bool IsDarkMode()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int v && v == 0;
+        }
+        catch { return false; }
+    }
+
+    public PowerStatus GetPowerStatus()
+    {
+        Win32.GetSystemPowerStatus(out var s);
+        return new PowerStatus(
+            s.ACLineStatus == 0,
+            s.BatteryLifePercent == 255 ? -1 : s.BatteryLifePercent);
+    }
+
+    // ── Notifications ──────────────────────────────────────────────────────────
+
+    public Task ShowOsNotification(string title, string body)
+    {
+        // Simplified: MessageBox with info icon until tray icon support is added.
+        // A full implementation uses Shell_NotifyIconW with NIF_INFO balloon.
+        Win32.MessageBox(IntPtr.Zero, body, title, 0x00000040 /* MB_ICONINFORMATION */);
+        return Task.CompletedTask;
+    }
+
     public void InitializeMenu(Action<string> onMenuAction, KeystoneConfig? config = null)
     {
         _onMenuAction = onMenuAction;
@@ -423,4 +521,56 @@ internal static class Win32
         [MarshalAs(UnmanagedType.LPWStr)] string? lpParameters,
         [MarshalAs(UnmanagedType.LPWStr)] string? lpDirectory,
         int nShowCmd);
+
+    // clipboard
+    public const uint CF_UNICODETEXT = 13;
+
+    [DllImport("user32.dll")]
+    public static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll")]
+    public static extern bool CloseClipboard();
+
+    [DllImport("user32.dll")]
+    public static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetClipboardData(uint uFormat);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsClipboardFormatAvailable(uint format);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GlobalLock(IntPtr hMem);
+
+    [DllImport("kernel32.dll")]
+    public static extern bool GlobalUnlock(IntPtr hMem);
+
+    // EnumDisplayMonitors
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, IntPtr lprcMonitor, IntPtr dwData);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    // power
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SYSTEM_POWER_STATUS
+    {
+        public byte ACLineStatus;
+        public byte BatteryFlag;
+        public byte BatteryLifePercent;
+        public byte SystemStatusFlag;
+        public uint BatteryLifeTime;
+        public uint BatteryFullLifeTime;
+    }
+
+    [DllImport("kernel32.dll")]
+    public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
 }
