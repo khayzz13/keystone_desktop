@@ -220,6 +220,21 @@ function registerBuiltins() {
 // === Discovery ===
 
 async function discoverServices() {
+  // Compiled mode — services statically imported into the exe at package time.
+  // The packager generates a wrapper that sets this global before importing host.ts.
+  const compiled = (globalThis as any).__KEYSTONE_COMPILED_SERVICES__;
+  if (compiled) {
+    for (const [name, mod] of Object.entries(compiled) as [string, any][]) {
+      if (mod.start) {
+        await mod.start(ctx);
+        services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
+      }
+      if (mod.onAction) actionHandlers.set(name, mod.onAction);
+    }
+    console.error(`[host] compiled mode: ${services.size} services`);
+    return;
+  }
+
   if (!existsSync(serviceDir)) return;
   for (const entry of readdirSync(serviceDir)) {
     const entryPath = join(serviceDir, entry);

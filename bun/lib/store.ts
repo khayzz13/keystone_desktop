@@ -6,26 +6,36 @@ import { Database } from "bun:sqlite";
 import { join } from "path";
 import { mkdirSync, existsSync } from "fs";
 
-const dataDir = join(process.env.KEYSTONE_APP_ROOT || import.meta.dir, "..", "data");
-if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+// Lazy-init: compiled exes evaluate static imports before KEYSTONE_APP_ROOT is set.
+// Defer DB creation to first store() call so the env var is available.
+let db: Database;
+let _get: ReturnType<Database["prepare"]>;
+let _set: ReturnType<Database["prepare"]>;
+let _del: ReturnType<Database["prepare"]>;
+let _clear: ReturnType<Database["prepare"]>;
+let _keys: ReturnType<Database["prepare"]>;
 
-const db = new Database(join(dataDir, "services.db"));
-
-db.run(`CREATE TABLE IF NOT EXISTS kv (
-  ns TEXT NOT NULL,
-  key TEXT NOT NULL,
-  val TEXT NOT NULL,
-  ts INTEGER NOT NULL DEFAULT (unixepoch()),
-  PRIMARY KEY (ns, key)
-)`);
-
-const _get = db.prepare("SELECT val FROM kv WHERE ns = ? AND key = ?");
-const _set = db.prepare("INSERT OR REPLACE INTO kv (ns, key, val, ts) VALUES (?, ?, ?, unixepoch())");
-const _del = db.prepare("DELETE FROM kv WHERE ns = ? AND key = ?");
-const _clear = db.prepare("DELETE FROM kv WHERE ns = ?");
-const _keys = db.prepare("SELECT key FROM kv WHERE ns = ?");
+function ensureDb() {
+  if (db) return;
+  const dataDir = join(process.env.KEYSTONE_APP_ROOT || import.meta.dir, "..", "data");
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+  db = new Database(join(dataDir, "services.db"));
+  db.run(`CREATE TABLE IF NOT EXISTS kv (
+    ns TEXT NOT NULL,
+    key TEXT NOT NULL,
+    val TEXT NOT NULL,
+    ts INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (ns, key)
+  )`);
+  _get = db.prepare("SELECT val FROM kv WHERE ns = ? AND key = ?");
+  _set = db.prepare("INSERT OR REPLACE INTO kv (ns, key, val, ts) VALUES (?, ?, ?, unixepoch())");
+  _del = db.prepare("DELETE FROM kv WHERE ns = ? AND key = ?");
+  _clear = db.prepare("DELETE FROM kv WHERE ns = ?");
+  _keys = db.prepare("SELECT key FROM kv WHERE ns = ?");
+}
 
 export function store(namespace: string) {
+  ensureDb();
   return {
     get<T = any>(key: string): T | null {
       const row = _get.get(namespace, key) as { val: string } | null;
