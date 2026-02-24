@@ -103,10 +103,13 @@ def print_next_steps(target_dir: Path, name: str, native: bool):
     python3 build.py --run
 
   Structure:
-    keystone.config.json   app manifest
-    build.py               build script
+    keystone.config.json   runtime config (windows, menus, plugins)
+    keystone.build.yaml    build config (engine version, packaging)
+    build.py               build shim (calls engine tools)
     app/                   C# assembly (ICorePlugin + custom plugins)
     bun/
+      keystone.config.ts   bun runtime config
+      package.json         app dependencies
       web/app.ts           main window component (edit this first)
       services/            Bun background services
     dylib/                 hot-reloadable plugin DLLs
@@ -119,10 +122,13 @@ def print_next_steps(target_dir: Path, name: str, native: bool):
     python3 build.py --run
 
   Structure:
-    keystone.config.json   app manifest
-    build.py               build script
+    keystone.config.json   runtime config (windows, menus, plugins)
+    keystone.build.yaml    build config (engine version, packaging)
+    build.py               build shim (calls engine tools)
     bun/
-      web/app.ts           main window  ← start here
+      keystone.config.ts   bun runtime config
+      package.json         app dependencies
+      web/app.ts           main window  <- start here
       services/            Bun background services
     icons/                 SVG/ICNS assets
 

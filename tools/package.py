@@ -235,14 +235,155 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
             else:
                 print(f"  WARNING: appAssembly not found: {src}")
 
-    # ── 6. Compile Bun ───────────────────────────────────────────────────────
+    # ── 6. Bun runtime ──────────────────────────────────────────────────────
+    # Pre-bundle web components into JS/CSS, compile host.ts into single-file exe.
+    # The bundle ships pre-built assets — no raw .ts source, no Bun.build() at runtime.
 
     bun_cfg = config.get("bun", {})
     compiled_exe_name = None
+    compiled_worker_name = None
+    pre_built_web = False
     if isinstance(bun_cfg, dict) and bun_cfg.get("enabled", True):
         bun_root = app_root / bun_cfg.get("root", "bun")
+        bundle_bun = bundle_resources / bun_cfg.get("root", "bun")
+        bundle_bun.mkdir(parents=True, exist_ok=True)
 
-        # Find host.ts: app's node_modules → engine source
+        # 6a. Pre-bundle web components (JS/CSS output only — no .ts source in bundle)
+        bun_config_ts = bun_root / "keystone.config.ts"
+        web_dir_name = "web"
+        web_components = {}
+
+        # Read bun-side config to find web component entries
+        # Use bun to evaluate the TypeScript config and extract component entries
+        if bun_config_ts.exists():
+            try:
+                extract_script = f"""
+                const mod = require("{bun_config_ts}");
+                const cfg = mod.default ?? mod;
+                console.log(JSON.stringify({{
+                    webDir: cfg.web?.dir ?? "web",
+                    components: cfg.web?.components ?? {{}},
+                }}));
+                """
+                result = subprocess.run(["bun", "-e", extract_script],
+                    capture_output=True, text=True, cwd=bun_root)
+                if result.returncode == 0 and result.stdout.strip():
+                    parsed = json.loads(result.stdout.strip())
+                    web_dir_name = parsed.get("webDir", "web")
+                    web_components = parsed.get("components", {})
+            except Exception as e:
+                print(f"  WARNING: Could not parse bun config: {e}")
+
+        # Auto-discover .ts/.tsx in web dir if no explicit entries
+        web_src_dir = bun_root / web_dir_name
+        if not web_components and web_src_dir.exists():
+            for f in sorted(web_src_dir.iterdir()):
+                if f.suffix in (".ts", ".tsx") and f.is_file():
+                    name = f.stem
+                    web_components[name] = f"./{web_dir_name}/{f.name}"
+
+        bundle_web_dir = bundle_bun / web_dir_name
+        bundle_web_dir.mkdir(parents=True, exist_ok=True)
+
+        if web_components and bun_root.exists():
+            print(f"  Pre-bundling {len(web_components)} web component(s)...")
+            for name, entry in web_components.items():
+                entry_abs = bun_root / entry.lstrip("./")
+                if not entry_abs.exists():
+                    print(f"    WARNING: {entry} not found, skipping {name}")
+                    continue
+                # Use Bun.build() JS API — supports naming with [ext] for JS+CSS output
+                bundle_script = f"""
+                const result = await Bun.build({{
+                    entrypoints: ["{entry_abs}"],
+                    outdir: "{bundle_web_dir}",
+                    target: "browser",
+                    format: "esm",
+                    naming: "{name}.[ext]",
+                }});
+                if (!result.success) {{
+                    for (const log of result.logs) console.error(log.message);
+                    process.exit(1);
+                }}
+                console.log("{name}: " + result.outputs.length + " file(s)");
+                """
+                run(["bun", "-e", bundle_script], cwd=bun_root)
+                pre_built_web = True
+
+        # 6b. Pre-bundle services → .js (no raw .ts in distribution)
+        #     Collect all service directories: main host + each worker's servicesDir
+        services_dir_name = "services"
+        service_dirs = [services_dir_name]  # main host services
+        workers_cfg = config.get("workers", []) or []
+        for w in workers_cfg:
+            svc_dir = w.get("servicesDir", "")
+            if svc_dir and svc_dir not in service_dirs:
+                service_dirs.append(svc_dir)
+
+        def bundle_service_dir(rel_dir):
+            """Pre-bundle all .ts/.tsx files in a service directory to .js."""
+            svc_src = bun_root / rel_dir
+            if not svc_src.exists():
+                return
+            svc_dst = bundle_bun / rel_dir
+            svc_dst.mkdir(parents=True, exist_ok=True)
+            count = 0
+            for f in sorted(svc_src.iterdir()):
+                if f.is_file() and f.suffix in (".ts", ".tsx"):
+                    bundle_script = f"""
+                    const result = await Bun.build({{
+                        entrypoints: ["{f}"],
+                        outdir: "{svc_dst}",
+                        target: "bun",
+                        format: "esm",
+                        naming: "{f.stem}.[ext]",
+                    }});
+                    if (!result.success) {{
+                        for (const log of result.logs) console.error(log.message);
+                        process.exit(1);
+                    }}
+                    """
+                    run(["bun", "-e", bundle_script], cwd=bun_root)
+                    count += 1
+                elif f.is_dir():
+                    idx = f / "index.ts"
+                    if not idx.exists():
+                        continue
+                    out = svc_dst / f.name
+                    out.mkdir(exist_ok=True)
+                    bundle_script = f"""
+                    const result = await Bun.build({{
+                        entrypoints: ["{idx}"],
+                        outdir: "{out}",
+                        target: "bun",
+                        format: "esm",
+                        naming: "index.[ext]",
+                    }});
+                    if (!result.success) {{
+                        for (const log of result.logs) console.error(log.message);
+                        process.exit(1);
+                    }}
+                    """
+                    run(["bun", "-e", bundle_script], cwd=bun_root)
+                    count += 1
+            if count:
+                print(f"  Services: {rel_dir}/ ({count} bundled)")
+
+        for svc_dir in service_dirs:
+            bundle_service_dir(svc_dir)
+
+        # 6c. Copy keystone.config.ts for runtime config
+        if bun_config_ts.exists():
+            shutil.copy2(bun_config_ts, bundle_bun / "keystone.config.ts")
+
+        # 6d. Copy node_modules (needed by compiled exe for SDK, runtime types, app deps)
+        nm_src = bun_root / "node_modules"
+        if nm_src.exists():
+            shutil.copytree(nm_src, bundle_bun / "node_modules",
+                            ignore=shutil.ignore_patterns(".bun", ".cache"))
+            print(f"  node_modules: copied")
+
+        # 6e. Compile host.ts → single-file executable
         host_ts = bun_root / "node_modules" / "keystone-desktop" / "host.ts"
         if not host_ts.exists():
             host_ts = engine / "bun" / "host.ts"
@@ -250,11 +391,27 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
         if host_ts.exists():
             compiled_exe_name = safe_name
             compiled_exe_path = bundle_macos / compiled_exe_name
-            print(f"  Compiling Bun → {compiled_exe_name}...")
+            print(f"  Compiling Bun -> {compiled_exe_name}...")
             run(["bun", "build", "--compile", str(host_ts),
                  "--outfile", str(compiled_exe_path)])
         else:
             print(f"  WARNING: host.ts not found — Bun runtime not compiled")
+
+        # 6f. Compile worker-host.ts → standalone worker executable
+        compiled_worker_name = None
+        if workers_cfg:
+            worker_host_ts = bun_root / "node_modules" / "keystone-desktop" / "worker-host.ts"
+            if not worker_host_ts.exists():
+                worker_host_ts = engine / "bun" / "worker-host.ts"
+
+            if worker_host_ts.exists():
+                compiled_worker_name = safe_name + "-worker"
+                compiled_worker_path = bundle_macos / compiled_worker_name
+                print(f"  Compiling Worker -> {compiled_worker_name}...")
+                run(["bun", "build", "--compile", str(worker_host_ts),
+                     "--outfile", str(compiled_worker_path)])
+            else:
+                print(f"  WARNING: worker-host.ts not found — workers not compiled")
 
     # ── 7. Scripts ───────────────────────────────────────────────────────────
 
@@ -318,9 +475,14 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
         rt_plugins["allowExternalSignatures"] = allow_external
         runtime_config["plugins"] = rt_plugins
 
-    if compiled_exe_name:
+    if compiled_exe_name or pre_built_web or compiled_worker_name:
         rt_bun = dict(runtime_config.get("bun", {})) if isinstance(runtime_config.get("bun"), dict) else {}
-        rt_bun["compiledExe"] = compiled_exe_name
+        if compiled_exe_name:
+            rt_bun["compiledExe"] = compiled_exe_name
+        if compiled_worker_name:
+            rt_bun["compiledWorkerExe"] = compiled_worker_name
+        if pre_built_web:
+            rt_bun["preBuiltWeb"] = True
         runtime_config["bun"] = rt_bun
 
     config_name = "keystone.config.json"

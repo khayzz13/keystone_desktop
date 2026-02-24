@@ -20,7 +20,8 @@ public class BunWorkerManager : IBunWorkerManager
     public BunWorker? this[string name] => _workers.GetValueOrDefault(name);
     public IReadOnlyDictionary<string, BunWorker> All => _workers;
 
-    public BunWorker Spawn(BunWorkerConfig config, string workerHostPath, string appRoot)
+    public BunWorker Spawn(BunWorkerConfig config, string workerHostPath, string appRoot,
+        string? compiledExe = null)
     {
         if (_workers.TryGetValue(config.Name, out var existing))
         {
@@ -30,7 +31,7 @@ public class BunWorkerManager : IBunWorkerManager
 
         var worker = new BunWorker(config);
         _workers[config.Name] = worker;
-        worker.Start(workerHostPath, appRoot);
+        worker.Start(workerHostPath, appRoot, compiledExe);
         return worker;
     }
 

@@ -25,18 +25,40 @@ process.env.KEYSTONE_APP_ROOT = APP_ROOT;
 // === Load app config ===
 
 async function loadAppConfig(): Promise<ResolvedConfig> {
-  const configPath = join(APP_ROOT, "keystone.config.ts");
-  if (existsSync(configPath)) {
+  let userConfig: any = {};
+
+  // 1. Try keystone.config.ts (developer-written bun config)
+  const tsConfigPath = join(APP_ROOT, "keystone.config.ts");
+  if (existsSync(tsConfigPath)) {
     try {
-      const mod = require(configPath);
-      const userConfig = mod.default ?? mod;
-      console.error(`[host] loaded config from ${configPath}`);
-      return resolveConfig(userConfig);
+      const mod = require(tsConfigPath);
+      userConfig = mod.default ?? mod;
+      console.error(`[host] loaded config from ${tsConfigPath}`);
     } catch (e: any) {
       console.error(`[host] failed to load config: ${e.message}, using defaults`);
     }
   }
-  return resolveConfig({});
+
+  // 2. Check parent keystone.config.json for packager-injected flags (preBuiltWeb)
+  //    In a packaged .app: APP_ROOT = Resources/bun/, JSON config = Resources/keystone.config.json
+  for (const jsonPath of [
+    join(APP_ROOT, "..", "keystone.config.json"),
+    join(APP_ROOT, "keystone.config.json"),
+  ]) {
+    if (existsSync(jsonPath)) {
+      try {
+        const json = JSON.parse(require("fs").readFileSync(jsonPath, "utf-8"));
+        const bunCfg = json.bun;
+        if (bunCfg?.preBuiltWeb) {
+          userConfig.web = { ...userConfig.web, preBuilt: true };
+          console.error(`[host] pre-built mode enabled from ${jsonPath}`);
+        }
+        break;
+      } catch {}
+    }
+  }
+
+  return resolveConfig(userConfig);
 }
 
 const config = await loadAppConfig();
@@ -286,7 +308,7 @@ async function reloadAll() {
 
 // === File watcher — hot-reload (conditional) ===
 
-const watchEnabled = config.services.hotReload || config.web.hotReload;
+const watchEnabled = !config.web.preBuilt && (config.services.hotReload || config.web.hotReload);
 
 if (watchEnabled) {
   const SHARED_FILES = new Set([join(ENGINE_ROOT, "types.ts")]);
@@ -416,6 +438,19 @@ function buildOpts(entrypoints: string[], name: string) {
 const explicitEntryMap = new Map<string, string>();
 
 async function bundleWebComponents() {
+  // Pre-built mode: skip Bun.build(), just register existing .js files.
+  // Set by the packager for distribution bundles where web components are pre-bundled.
+  if (config.web.preBuilt) {
+    if (!existsSync(webDir)) return;
+    for (const file of readdirSync(webDir)) {
+      if (!file.endsWith(".js")) continue;
+      const name = file.replace(/\.js$/, "");
+      bundledComponents.add(name);
+    }
+    console.error(`[host] pre-built mode: registered ${bundledComponents.size} components`);
+    return;
+  }
+
   // 1. Explicit entries from config.web.components — name → relative entry path
   for (const [name, relPath] of Object.entries(config.web.components)) {
     const abs = join(APP_ROOT, relPath);

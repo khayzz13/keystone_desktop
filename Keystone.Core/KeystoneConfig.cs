@@ -232,6 +232,13 @@ public class BunConfig
     /// </summary>
     [JsonPropertyName("compiledExe")]
     public string? CompiledExe { get; set; }
+
+    /// <summary>
+    /// Name of the compiled worker executable. Set by the packager.
+    /// Workers use this instead of spawning via system bun.
+    /// </summary>
+    [JsonPropertyName("compiledWorkerExe")]
+    public string? CompiledWorkerExe { get; set; }
 }
 
 // === Window, toolbar, and menu configs (unchanged) ===
