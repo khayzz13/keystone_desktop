@@ -1,10 +1,10 @@
 # keystone-desktop
 
-> **Early development / experimental.** macOS and Linux supported. Windows support is planned.
+> **Early development / experimental.** macOS, Linux, and Windows supported.
 
 A software foundation and framework enabaling you to build with HTML/TS/CSS and/or C#. Three processes — a C# host, a Bun runtime, and a WebKit renderer — form a triangle with full communication across every path.
 
-Build your frontend in web tech (React, Svelte, vanilla JS), your backend services in TypeScript, and your main process in C# with direct access to the native platform — Metal on macOS, Vulkan on Linux. Or skip any layer you don't need.
+Build your frontend in web tech (React, Svelte, vanilla JS), your backend services in TypeScript, and your main process in C# with direct access to the native platform — Metal on macOS, Vulkan on Linux, D3D12 on Windows. Or skip any layer you don't need.
 
 https://discord.gg/d2GVrZJda7 - OFFICIAL DISCORD
 ---
@@ -28,7 +28,7 @@ Every pair talks in both directions. A crash in one process doesn't take down th
 
 ### C# host process
 
-The main process. Owns the native run loop (AppKit on macOS, GTK4 on Linux), creates native windows, drives the GPU/Skia rendering pipeline (Metal on macOS, Vulkan on Linux), loads plugins, and manages all child processes. This is where platform integration, rendering, and app lifecycle live.
+The main process. Owns the native run loop (AppKit on macOS, GTK4 on Linux, Win32 on Windows), creates native windows, drives the GPU/Skia rendering pipeline (Metal on macOS, Vulkan on Linux, D3D12 on Windows), loads plugins, and manages all child processes. This is where platform integration, rendering, and app lifecycle live.
 
 If you don't need custom native code, you don't have to write any — built-in invoke handlers cover file dialogs, window management, shell integration, and path queries out of the box.
 
@@ -36,9 +36,9 @@ If you don't need custom native code, you don't have to write any — built-in i
 
 The TypeScript runtime. Runs service modules, bundles and serves web components with HMR, and provides a WebSocket bridge between browser and backend. Bun's built-in bundler means no webpack/vite/esbuild configuration — components are bundled on demand.
 
-### WebKit renderer
+### Web renderer
 
-WebKit slots embedded inside native windows — WKWebView on macOS, WebKitGTK on Linux. Full DOM, CSS, fetch, Web Workers — the complete browser platform, powered by the system WebKit (not a bundled Chromium). Use any frontend framework or none.
+Embedded inside native windows — WKWebView on macOS, WebKitGTK on Linux, WebView2 on Windows. Full DOM, CSS, fetch, Web Workers — the complete browser platform. Use any frontend framework or none.
 
 ---
 
@@ -92,10 +92,10 @@ export function unmount(root: HTMLElement) {
 ## Design Decisions Worth Noting
 
 **On performance vs. Electron:**
-WebKit is significantly more efficient than Chromium — lower CPU overhead and better integration with the OS compositor. On macOS, Apple actively optimizes WebKit for the hardware. On Linux, WebKitGTK shares the same engine. Keystone Desktop's web layer inherits all of that. The Metal/Vulkan + Skia native rendering path doesn't pay any browser overhead at all.
+WebKit is significantly more efficient than Chromium — lower CPU overhead and better integration with the OS compositor. On macOS, Apple actively optimizes WebKit for the hardware. On Linux, WebKitGTK shares the same engine. On Windows, WebView2 uses the system Chromium (Edge), which is updated independently of the app. Keystone Desktop's web layer inherits all of that. The Metal/Vulkan/D3D12 + Skia native rendering path doesn't pay any browser overhead at all.
 
 **Why C# and not Go, Rust, or Swift?**
-.NET 10 has mature platform bindings on both macOS and Linux, first-class async, and a plugin system (AssemblyLoadContext) that's genuinely good for hot-reload. The alternative — Swift for the host — would mean no hot-reloadable plugins without significant additional infrastructure, and no Linux story. Rust would mean writing platform bindings from scratch. C# is the pragmatic choice for a framework that needs to be both native-capable and developer-friendly across platforms.
+.NET 10 has mature platform bindings on macOS, Linux, and Windows, first-class async, and a plugin system (AssemblyLoadContext) that's genuinely good for hot-reload. The alternative — Swift for the host — would mean no hot-reloadable plugins without significant additional infrastructure, and no Linux or Windows story. Rust would mean writing platform bindings from scratch. C# is the pragmatic choice for a framework that needs to be both native-capable and developer-friendly across platforms.
 
 **Why Bun and not Node or Deno?**
 Bun's built-in bundler (`Bun.build`) eliminates the need for a separate bundler process. The entire TypeScript → browser-ready JS pipeline runs inside the Bun process with no configuration. Bun's startup time is faster than Node, which matters for the subprocess restart recovery path.
@@ -150,7 +150,7 @@ Four built-in plugin interfaces, but the system is open — implement your own p
 
 | Interface | Purpose |
 |-----------|---------|
-| `IWindowPlugin` | Native GPU-rendered windows (Metal/Vulkan + Skia) |
+| `IWindowPlugin` | Native GPU-rendered windows (Metal/Vulkan/D3D12 + Skia) |
 | `IServicePlugin` | Background services |
 | `ILibraryPlugin` | Shared code used by other plugins |
 | `ILogicPlugin` | Render/compute logic, GPU pipelines |
@@ -169,7 +169,7 @@ public override SceneNode? BuildScene(FrameState state)
 }
 ```
 
-SkiaSharp + Metal/Vulkan for drawing. Taffy (Rust FFI) for Flex/Grid layout. Per-window GPU isolation. Retained scene graph with automatic diffing — no GPU re-upload unless something changes.
+SkiaSharp + Metal/Vulkan/D3D12 for drawing. Taffy (Rust FFI) for Flex/Grid layout. Per-window GPU isolation. Retained scene graph with automatic diffing — no GPU re-upload unless something changes.
 
 ### Batteries included
 
@@ -194,13 +194,13 @@ Desktop frameworks typically require a constellation of packages to cover basic 
 
 ## Stack
 
-| Layer | macOS | Linux |
-|-------|-------|-------|
-| Host / main process | C# / .NET 10, AppKit | C# / .NET 10, GTK4 |
-| GPU rendering | SkiaSharp + Metal | SkiaSharp + Vulkan (Silk.NET) |
-| Layout engine | Taffy (Rust FFI) | Taffy (Rust FFI) |
-| TypeScript runtime | Bun | Bun |
-| Web renderer | WKWebView | WebKitGTK |
+| Layer | macOS | Linux | Windows |
+|-------|-------|-------|---------|
+| Host / main process | C# / .NET 10, AppKit | C# / .NET 10, GTK4 | C# / .NET 10, Win32 |
+| GPU rendering | SkiaSharp + Metal | SkiaSharp + Vulkan (Silk.NET) | SkiaSharp + D3D12 (Vortice) |
+| Layout engine | Taffy (Rust FFI) | Taffy (Rust FFI) | Taffy (Rust FFI) |
+| TypeScript runtime | Bun | Bun | Bun |
+| Web renderer | WKWebView | WebKitGTK | WebView2 |
 
 ---
 
@@ -224,6 +224,8 @@ python3 build.py --run
 **macOS requirements:** macOS 15+ (Apple Silicon), .NET 10 SDK, Bun, Rust toolchain
 
 **Linux requirements:** GTK4, WebKitGTK 4.1, Vulkan drivers, .NET 10 SDK, Bun, Rust toolchain
+
+**Windows requirements:** Windows 10 1903+ (for WebView2 runtime), .NET 10 SDK, Bun, Rust toolchain
 
 ```bash
 git clone https://github.com/khayzz13/keystone_desktop.git

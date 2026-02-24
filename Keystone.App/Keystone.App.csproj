@@ -2,9 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0-macos</TargetFramework>
-    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
-    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <TargetFrameworks>net10.0-macos;net10.0-windows;net10.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -22,13 +20,34 @@
     <CreatePackage>false</CreatePackage>
   </PropertyGroup>
 
+  <!-- macOS-specific properties -->
+  <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'macos'">
+    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <!-- Common project references (all platforms) -->
   <ItemGroup>
     <ProjectReference Include="../Keystone.Core/Keystone.Core.csproj" />
     <ProjectReference Include="../Keystone.Core.Runtime/Keystone.Core.Runtime.csproj" />
     <ProjectReference Include="../Keystone.Core.Platform/Keystone.Core.Platform.csproj" />
     <ProjectReference Include="../Keystone.Core.Management/Keystone.Core.Management.csproj" />
-    <ProjectReference Include="../Keystone.Core.Graphics.Skia/Keystone.Core.Graphics.Skia.csproj" />
     <ProjectReference Include="../Keystone.Toolkit/Keystone.Toolkit.csproj" />
+  </ItemGroup>
+
+  <!-- macOS GPU -->
+  <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'macos'">
+    <ProjectReference Include="../Keystone.Core.Graphics.Skia/Keystone.Core.Graphics.Skia.csproj" />
+  </ItemGroup>
+
+  <!-- Windows GPU -->
+  <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+    <ProjectReference Include="../Keystone.Core.Graphics.Skia.D3D/Keystone.Core.Graphics.Skia.D3D.csproj" />
+  </ItemGroup>
+
+  <!-- Linux GPU -->
+  <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) != 'macos' And $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) != 'windows'">
+    <ProjectReference Include="../Keystone.Core.Graphics.Skia.Vulkan/Keystone.Core.Graphics.Skia.Vulkan.csproj" />
   </ItemGroup>
 
   <ItemGroup>

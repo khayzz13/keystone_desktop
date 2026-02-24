@@ -1,9 +1,7 @@
 using System;
 using System.IO;
 using Keystone.Core;
-using Keystone.Core.Graphics.Skia;
 using Keystone.Core.Platform;
-using Keystone.Core.Platform.MacOS;
 using Keystone.Core.Runtime;
 
 namespace Keystone.App;
@@ -41,9 +39,21 @@ class Program
             if (Directory.Exists(nativePath))
                 NativeLibraryLoader.AddSearchPath(nativePath);
         }
-        var platform = new MacOSPlatform();
+#if MACOS
+        IPlatform platform = new Keystone.Core.Platform.MacOS.MacOSPlatform();
         platform.Initialize();
-        SkiaWindow.Initialize();
+        Keystone.Core.Graphics.Skia.SkiaWindow.Initialize();
+#elif WINDOWS
+        IPlatform platform = new Keystone.Core.Platform.Windows.WindowsPlatform();
+        platform.Initialize();
+        Keystone.Core.Graphics.Skia.D3D.D3DSkiaWindow.Initialize();
+#elif LINUX
+        IPlatform platform = new Keystone.Core.Platform.Linux.LinuxPlatform();
+        platform.Initialize();
+#else
+        throw new PlatformNotSupportedException("Unsupported OS");
+        IPlatform platform = null!;
+#endif
 
         // Create, initialize, and run
         var runtime = new ApplicationRuntime(config, rootDir, platform);
