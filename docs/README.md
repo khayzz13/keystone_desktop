@@ -1,6 +1,6 @@
 # Keystone Documentation
 
-Native macOS desktop runtime. Metal/Skia rendering, Bun-powered web components, hot-reloadable C# plugins — or any subset of those.
+Native desktop application framework for macOS and Linux. GPU/Skia rendering, Bun-powered web components, hot-reloadable C# plugins — or any subset of those.
 
 ---
 
@@ -13,7 +13,7 @@ Native macOS desktop runtime. Metal/Skia rendering, Bun-powered web components, 
 
 - **[Web Components](./web-components.md)** — TypeScript UI modules, the slot system, HMR, framework usage
 - **[Bun Services](./bun-services.md)** — background services, `query`/`subscribe`/`push`, the `defineService` builder, SQLite store
-- **[C# App Layer](./csharp-app-layer.md)** — `ICorePlugin`, custom `invoke()` handlers, native Metal/Skia windows, lifecycle events
+- **[C# App Layer](./csharp-app-layer.md)** — `ICorePlugin`, custom `invoke()` handlers, native GPU/Skia windows, lifecycle events
 - **[Plugin System](./plugin-system.md)** — hot-reloadable DLL plugins: service, logic, library, and window types
 - **[HTTP Router](./http-router.md)** — optional `fetch()`-compatible router over the invoke() bridge; or use `invoke()`/`RegisterInvokeHandler` directly
 - **[Workers](./workers.md)** — additional Bun processes for parallelism and extension isolation
@@ -22,7 +22,7 @@ Native macOS desktop runtime. Metal/Skia rendering, Bun-powered web components, 
 
 - **[Native API Reference](./native-api.md)** — all built-in `invoke` channels, `action` strings, bridge API
 - **[Configuration Reference](./configuration.md)** — `keystone.json` and `bun/keystone.config.ts` full schema
-- **[Window Chrome](./window-chrome.md)** — controlling the native window surface: full-bleed web, traffic lights only, or native chrome
+- **[Window Chrome](./window-chrome.md)** — controlling the native window surface: full-bleed web, native window controls, or GPU-rendered chrome
 - **[Build & Packaging](./build-and-packaging.md)** — build pipeline, packaging, distribution, compiled executables
 
 ## Examples

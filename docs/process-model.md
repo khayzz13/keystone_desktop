@@ -9,7 +9,8 @@ Keystone runs as three or more independent OS processes. Understanding this is t
 ```
 ┌─────────────────────────────────────────────┐
 │           C# Host Process                   │
-│  .NET 10 / AppKit / Metal / SkiaSharp       │
+│  .NET 10 / AppKit+Metal (macOS)             │
+│           GTK4+Vulkan (Linux)               │
 │                                             │
 │  ┌─────────────┐   ┌────────────────────┐   │
 │  │  App Layer  │   │   Plugin System    │   │
@@ -19,7 +20,7 @@ Keystone runs as three or more independent OS processes. Understanding this is t
 │  ┌─────────────────────────────────────┐    │
 │  │         Window Manager              │    │
 │  │  ManagedWindow × N (per window)     │    │
-│  │  Metal rendering, event routing     │    │
+│  │  GPU/Skia rendering, event routing  │    │
 │  └─────────────────────────────────────┘    │
 │                         ↕ stdin/stdout      │
 └──────────────┬──────────────────────────────┘
@@ -37,15 +38,15 @@ Keystone runs as three or more independent OS processes. Understanding this is t
 ┌──────────────────────┐     browserAccess=true)
 │  WebKit Content      │
 │  Process (per window)│
-│  Apple-managed       │
+│  OS-managed          │
 └──────────────────────┘
 ```
 
 ### C# Host Process
 
-The main process. Owns the NSApplication run loop, creates and manages all native windows (AppKit `NSWindow`), drives the Metal/Skia rendering pipeline, and routes all input events. It also owns the lifecycle of all other processes.
+The main process. Owns the platform run loop (AppKit on macOS, GTK4 on Linux), creates and manages all native windows, drives the GPU/Skia rendering pipeline (Metal on macOS, Vulkan on Linux), and routes all input events. It also owns the lifecycle of all other processes.
 
-This is the closest equivalent to Electron's **main process** — written in C# with direct access to the full native macOS API surface.
+Written in C# with direct access to native platform APIs on both macOS and Linux.
 
 Everything in `Keystone.Core.Runtime` runs here. Your C# app layer (`ICorePlugin`) and hot-reloadable plugins (`IWindowPlugin`, `IServicePlugin`, `ILogicPlugin`, `ILibraryPlugin`) also run in this process.
 
@@ -57,21 +58,21 @@ Bun serves two things:
 1. **Services** — TypeScript modules that respond to `query()` calls and push data to named channels via `subscribe()`.
 2. **Web component bundle server** — An HTTP server that builds and serves your TypeScript UI components on demand, with HMR.
 
-There is no Electron equivalent at exactly this level. The closest analogy is Electron's main process, but Bun is separate from C# rather than sharing a process with it.
+Bun is a separate OS-level process from C#, not a thread or module inside it.
 
 ### Bun Workers (0–N)
 
 Additional Bun subprocesses, each running `worker-host.ts`. Workers have their own services directory and their own event loop. They communicate with C# via the same stdin/stdout NDJSON protocol as main Bun. Optionally, workers with `browserAccess: true` start a WebSocket server for direct high-throughput connections from other workers, main Bun, or browsers.
 
-Workers are the equivalent of Electron's `UtilityProcess` (for parallelism) and VS Code's extension host (for extension isolation).
+Workers are suited for parallelism and extension isolation — similar to what a UtilityProcess provides in other frameworks.
 
 See [Workers](./workers.md) for full documentation.
 
 ### WebKit Content Process
 
-When a window needs to show a web component, a `WKWebView` is created and Apple's WebKit spawns a sandboxed content process automatically. This is the GPU process that actually renders the HTML/CSS/JS.
+When a window needs to show a web component, a WebKit view is created (WKWebView on macOS, WebKitGTK on Linux) and the OS-managed WebKit process spawns automatically. This is the process that actually renders the HTML/CSS/JS.
 
-This is equivalent to Electron's **renderer process** — but Apple manages it entirely. One shared content process services all `WKWebView` slots in a window (via the shared `WKProcessPool`).
+On macOS, one shared content process services all WKWebView slots in a window via the shared `WKProcessPool`.
 
 ---
 
@@ -80,7 +81,7 @@ This is equivalent to Electron's **renderer process** — but Apple manages it e
 The three processes form a full communication triangle — every pair can talk to each other in both directions. No leg is missing.
 
 ```
-           Browser (WKWebView)
+           Browser (WebKit)
           ↗ invoke / fetch        ↘ WebSocket push
          ↙ WebSocket push          ↗ invokeBun / query / send
     C#  ←———————— stdout ———————————  Bun
@@ -91,7 +92,7 @@ The three processes form a full communication triangle — every pair can talk t
 
 ### Browser → C# (invoke)
 
-The fastest path from TypeScript to C#. Uses `WKScriptMessageHandler` — a direct in-process postMessage call from WebKit to the C# message handler. Zero Bun round-trip.
+The fastest path from TypeScript to C#. Uses the WebKit script message handler — a direct in-process postMessage call from WebKit to the C# message handler. Zero Bun round-trip.
 
 ```typescript
 import { invoke, dialog } from "@keystone/sdk/bridge";
@@ -277,7 +278,7 @@ See [Workers](./workers.md) for the full communication protocol.
 
 Because the three processes are truly separate:
 
-- **A WebKit content process crash** does not affect your C# host or Bun process. Keystone detects it via `WKNavigationDelegate.ContentProcessDidTerminate` and reloads the WebView automatically.
+- **A WebKit content process crash** does not affect your C# host or Bun process. Keystone detects it via the platform WebView crash signal (macOS: `WKNavigationDelegate`, Linux: `web-process-terminated`) and reloads the WebView automatically.
 - **A Bun process crash** does not affect your native windows or rendered UI. The C# host detects it via stdout EOF and restarts Bun with exponential backoff.
 - **C# crashes** are the only fatal crash — but C# is significantly more stable than Node.js for native code since it has real memory ownership and no GC/finalizer races with OS APIs.
 
@@ -313,28 +314,40 @@ context.OnWebViewCrash += windowId => {
 
 ---
 
-## Comparison with Electron
+## Framework Landscape
 
-| | Electron | Keystone |
-|---|---|---|
-| Main process runtime | Node.js | C# / .NET 10 |
-| Renderer process | Chromium per-window | WebKit per-window (Apple-managed) |
-| IPC from renderer | `ipcRenderer.invoke()` | `invoke()` via `WKScriptMessageHandler` |
-| IPC from main | `ipcMain.handle()` | `RegisterInvokeHandler()` |
-| Background services | Worker threads in main | Bun subprocess (separate PID) |
-| Native APIs | `electron.dialog`, `shell`, etc. | Built-in `dialog:*`, `shell:*`, `app:*` invoke handlers |
-| Native UI | None (HTML everywhere) | Metal/Skia rendering + native AppKit windows |
-| Crash isolation | Renderer process crash → recovery event | WebKit crash → auto-reload; Bun crash → auto-restart |
-| Process count | 2+ (main + one renderer per window) | 3+ (C# host + Bun main + WebKit content + 0–N workers) |
-| Native code | N-API addons | Direct C#, FFI, P/Invoke, platform frameworks |
+There are several frameworks in this space. Here's how they compare on the dimensions that matter structurally, followed by honest numbers.
 
-The key structural difference: Electron's main process is JavaScript running in Node. Keystone's main process is C# with direct access to AppKit, Metal, CoreAnimation, and any macOS framework via P/Invoke or `.NET` bindings. The web layer in Keystone is optional — native Metal/Skia rendering is available without it.
+| | Electron | Tauri | Electrobun | Electron.NET | Wails | Keystone Desktop |
+|---|---|---|---|---|---|---|
+| Main process language | Node.js (JS) | Rust | Bun (TS) | ASP.NET Core (C#) | Go | C# / .NET 10 |
+| Renderer | Bundled Chromium | System WebView | System WebView | Bundled Chromium | System WebView | System WebKit (WKWebView / WebKitGTK) |
+| Backend services language | JS/Node | Rust | TypeScript | C# | Go | TypeScript (Bun) |
+| GPU/native rendering | No (HTML only) | No (HTML only) | No (HTML only) | No (HTML only) | No (HTML only) | Yes — Metal (macOS) / Vulkan (Linux) via SkiaSharp |
+| Plugin hot-reload | No | No | No | No | No | Yes — collectible ALC, FileSystemWatcher |
+| macOS | Yes | Yes | Yes (primary) | Yes | Yes | Yes |
+| Linux | Yes | Yes | Partial | Yes | Yes | Yes |
+| Windows | Yes | Yes | Planned | Yes | Yes | Planned |
+| Baseline RAM (hello world) | ~100–150 MB | ~30–80 MB | ~50–100 MB | ~150–250 MB | ~50–80 MB | ~250–350 MB (React UI) |
+| .app / binary size | ~150–200 MB | ~3–15 MB | ~14 MB | ~150–200 MB | ~5–20 MB | ~200 MB |
+
+### On the numbers
+
+Keystone Desktop's RAM footprint is in Electron territory, not Tauri/Wails territory. That's an honest characterization and worth understanding why.
+
+Tauri and Wails ship a small native binary (Rust or Go) that links against the system WebView — no bundled runtime, very small. Keystone ships the .NET runtime (~30–50 MB) alongside the application, and runs three processes: C# host, Bun subprocess, and WebKit content process. Each has a real footprint. The tradeoff is deliberate: you get a genuinely capable main process in a mature typed language, hot-reloadable C# plugins, a full TypeScript/Bun service layer with SQLite and bundling built in, and a GPU rendering path that doesn't go through a browser at all.
+
+Electron.NET adds an ASP.NET Core web server *inside* an Electron process — it's not a native desktop runtime, it's Electron with .NET wedged in. The architecture is fundamentally different from Keystone, where C# is the native host and owns the platform run loop directly.
+
+The .app size is large because the .NET runtime is bundled. This is the same reason Electron apps are large — they bundle Chromium. The parallel holds: you get runtime capabilities in exchange for bundle size.
+
+If binary size and baseline memory are the primary constraints, Tauri or Wails are strong choices. Keystone Desktop is for teams that want C# as a real main process — direct platform API access, hot-reloadable native code, GPU rendering — with TypeScript for services and UI, not bolted on as an afterthought.
 
 ---
 
 ## Going C# Only
 
-The web layer is entirely optional. If you don't configure a `bun` block in `keystone.json`, Keystone doesn't spawn a Bun process and no WebView is created. Your app renders entirely in the Metal/Skia pipeline via `IWindowPlugin`.
+The web layer is entirely optional. If you don't configure a `bun` block in `keystone.json`, Keystone doesn't spawn a Bun process and no WebView is created. Your app renders entirely in the GPU/Skia pipeline via `IWindowPlugin`.
 
 ```json
 {
@@ -356,7 +369,7 @@ public class MyWindow : IWindowPlugin
         {
             Direction = FlexDirection.Column,
             Children = [
-                new TextNode("Hello from Metal/Skia"),
+                new TextNode("Hello from GPU/Skia"),
                 new ButtonNode("Click me", onClick: () => action("do-thing"))
             ]
         };

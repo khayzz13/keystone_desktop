@@ -1,6 +1,6 @@
 # C# App Layer
 
-The C# app layer is Keystone's equivalent of Electron's main process — written in C#. You get the full .NET 10 standard library, direct P/Invoke to any macOS framework, and native threads with real memory ownership.
+The C# app layer is Keystone's equivalent of Electron's main process — written in C#. You get the full .NET 10 standard library, direct P/Invoke to any platform framework (AppKit/Metal on macOS, GTK4/Vulkan on Linux), and native threads with real memory ownership.
 
 The app layer is **optional**. If the built-in invoke handlers cover your needs (file dialogs, window management, path queries), skip it. When you do need it, implement `ICorePlugin` in a class library, build it to `dylib/`, and point `appAssembly` in `keystone.json` at the output DLL. The framework loads it once at startup — it is not a hot-reload plugin.
 
@@ -51,7 +51,7 @@ public interface ICoreContext
     // Process lifecycle (crash recovery)
     event Action<int>? OnBunCrash;        // Bun subprocess exited unexpectedly
     event Action<int>? OnBunRestart;      // Bun restarted successfully
-    event Action<string>? OnWebViewCrash; // WKWebView content process crashed
+    event Action<string>? OnWebViewCrash; // WebKit content process crashed
 
     // Custom action handling
     Action<string, string>? OnUnhandledAction { set; }
@@ -102,7 +102,7 @@ const content = await invoke<string>("myapp:readFile", { path: "/etc/hosts" });
 Handlers run on a thread pool thread, not the main thread:
 
 - Async I/O works naturally — `await File.ReadAllTextAsync(...)`, `await httpClient.GetAsync(...)`.
-- Anything that needs AppKit (showing panels, modifying windows) must dispatch to the main thread.
+- Anything that needs platform UI APIs (showing panels, modifying windows) must dispatch to the main thread.
 - The handler never blocks the run loop.
 
 ```csharp
@@ -150,7 +150,7 @@ action("myapp:export-pdf");
 
 ---
 
-## Native Windows (Metal/Skia)
+## Native Windows (GPU/Skia)
 
 When you need maximum rendering performance or want to bypass the web layer, implement `IWindowPlugin`. The renderer calls `BuildScene()` or `Render()` on a per-window background thread at vsync.
 

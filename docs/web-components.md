@@ -1,6 +1,6 @@
 # Web Components
 
-A web component is a TypeScript/TSX entry point that Bun bundles and serves into a native window slot. The code runs in a full WKWebView browser context — full DOM, CSS, `fetch`, Web APIs, any ESM-compatible framework.
+A web component is a TypeScript/TSX entry point that Bun bundles and serves into a native window slot. The code runs in a full WebKit browser context (WKWebView on macOS, WebKitGTK on Linux) — full DOM, CSS, `fetch`, Web APIs, any ESM-compatible framework.
 
 There is no required folder structure, no mandatory boilerplate, no framework opinion. The only thing the slot host needs from your entry file is two named exports:
 
@@ -131,7 +131,7 @@ The slot host sees exactly two exports. How you arrived at them is your business
 
 ## What runs in the browser
 
-Everything available in WKWebView (WebKit on macOS):
+Everything available in the system WebKit (WKWebView on macOS, WebKitGTK on Linux):
 
 | | Notes |
 |---|---|
@@ -149,9 +149,9 @@ Everything available in WKWebView (WebKit on macOS):
 
 C# manages where components appear using **slots** — named rectangular regions within a native window. A slot maps a component name to a position and size in the window.
 
-The native rendering layer (Metal/Skia) draws everything underneath. When a slot is active, a `WKWebView` overlays that region with your component's output. The two layers composite via CoreAnimation.
+The native rendering layer (GPU/Skia) draws everything underneath. When a slot is active, a WebKit view overlays that region with your component's output. The two layers composite via the platform compositor.
 
-All slots in a single window share one `WKWebView` (and one WebKit content process). The host page manages slot lifecycle via `window.__addSlot`, `window.__moveSlot`, `window.__removeSlot`, and `window.__hotSwapSlot` — you never call these directly.
+All slots in a single window share one WebKit view (and one WebKit content process). The host page manages slot lifecycle via `window.__addSlot`, `window.__moveSlot`, `window.__removeSlot`, and `window.__hotSwapSlot` — you never call these directly.
 
 ---
 
@@ -375,7 +375,7 @@ img.src = "/web/assets/logo.png";   // served from bun/web/assets/logo.png
 ```
 C# spawns window
     ↓
-WKWebView created, loads /__host__
+WebKit view created, loads /__host__
     ↓
 host page ready (window.__ready = true)
     ↓

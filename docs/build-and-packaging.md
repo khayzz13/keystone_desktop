@@ -1,9 +1,9 @@
 # Keystone Desktop Build & Packaging System
 
-Keystone Desktop is a native macOS application framework combining three processes:
-- **C# (.NET 10)** — native AppKit runtime with Metal GPU rendering via Skia and a plugin system
+Keystone Desktop is a native desktop application framework combining three processes:
+- **C# (.NET 10)** — native platform runtime with GPU rendering via Skia and a plugin system (AppKit/Metal on macOS, GTK4/Vulkan on Linux)
 - **Bun (TypeScript)** — backend services, web component compilation, and asset bundling
-- **WebKit (WKWebView)** — web frontend rendering and component display
+- **WebKit** — web frontend rendering and component display (WKWebView on macOS, WebKitGTK on Linux)
 
 The build system cleanly separates framework compilation from application packaging, enabling both fast iteration and reproducible distribution builds.
 
@@ -71,8 +71,8 @@ The build pipeline has two distinct phases:
    - Copies framework runtime to new bundle
    - Compiles Bun TypeScript to single-file executable
    - Assembles plugins (bundled or side-by-side)
-   - Creates macOS code signature
-   - Result: Distributable `MyApp.app` bundle
+   - Creates platform code signature (macOS: codesign; Linux: not required)
+   - Result: Distributable app bundle
 
 ### Three Application Modes
 
@@ -116,7 +116,7 @@ The config manifest controls app identity, windows, plugins, scripts, and build 
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `name` | string | "Keystone App" | Display name in macOS menu bar, Dock, and App Store |
+| `name` | string | "Keystone App" | Display name in the menu bar, Dock/taskbar, and app stores |
 | `id` | string | "com.keystone.app" | Bundle identifier (reverse DNS format) |
 | `version` | string | "1.0.0" | Semantic version (shown in About dialog) |
 
@@ -274,7 +274,7 @@ Define per-menu item lists. Each item has `title`, `action`, and optional `short
 | `bunMaxRestarts` | int | 5 | Max restart attempts before giving up |
 | `bunRestartBaseDelayMs` | int | 500 | Initial restart delay (doubles each attempt) |
 | `bunRestartMaxDelayMs` | int | 30000 | Max delay cap per restart |
-| `webViewAutoReload` | bool | true | Auto-reload WKWebView on content process crash |
+| `webViewAutoReload` | bool | true | Auto-reload WebView on content process crash |
 | `webViewReloadDelayMs` | int | 200 | Delay before reloading |
 
 #### Other Fields
@@ -317,7 +317,7 @@ The `build` section is **write-only** (by packager) and **never read by runtime*
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | `pluginMode` | string | "side-by-side" | Plugin layout: "side-by-side" or "bundled" |
-| `category` | string | "public.app-category.utilities" | macOS app category (LSApplicationCategoryType) |
+| `category` | string | "public.app-category.utilities" | macOS app category for Info.plist (LSApplicationCategoryType) |
 | `outDir` | string | "dist" | Output directory for packaged .app |
 | `signingIdentity` | string | null | Developer ID cert name (null = ad-hoc signature) |
 | `requireSigningIdentity` | bool | false | Fail packaging if no real signing identity is configured |
@@ -395,10 +395,17 @@ Build Keystone Desktop from source. This produces the reusable framework binary 
 
 ### Requirements
 
+**macOS:**
 - macOS 15+ (Sequoia)
 - .NET 10 SDK
 - Rust toolchain (for native libs)
 - Xcode Command Line Tools
+
+**Linux:**
+- .NET 10 SDK
+- Rust toolchain (for native libs)
+- GTK4 development libraries
+- Vulkan SDK (for GPU rendering)
 
 ### Building
 
@@ -434,8 +441,9 @@ cargo build -p keystone-layout --release
 
 **Phase 2: C# Core Libraries**
 - `Keystone.Core` — Rendering, colors, colors palette, plugin interfaces
-- `Keystone.Core.Platform` — Native AppKit bindings, layout engine FFI
-- `Keystone.Core.Graphics.Skia` — Metal GPU contexts, Skia window management
+- `Keystone.Core.Platform` — Native platform bindings (AppKit on macOS, GTK4 on Linux), layout engine FFI
+- `Keystone.Core.Graphics.Skia` — Metal GPU contexts, Skia window management (macOS)
+- `Keystone.Core.Graphics.Skia.Vulkan` — Vulkan GPU contexts, Skia window management (Linux)
 - `Keystone.Core.Management` — Plugin/script hot-reload, Bun bridge
 - `Keystone.Core.Runtime` — Application runtime, window manager
 - `Keystone.Toolkit` — Utility types and helpers
@@ -684,7 +692,7 @@ The runtime loads all three directories in order: `dir` -> `userDir` -> `extensi
 
 ## Entitlements
 
-All Keystone apps use **hardened runtime** entitlements (Developer ID distribution). Like Electron, there is no App Store target.
+On macOS, all Keystone apps use **hardened runtime** entitlements (Developer ID distribution). Linux does not require entitlements. There is no Mac App Store target.
 
 ### Base Entitlements
 
@@ -1097,7 +1105,7 @@ At runtime, the config is rewritten:
 
 ### Cross-Compilation for Different Architectures
 
-Current framework builds for `osx-arm64` (Apple Silicon). For Intel Macs:
+**macOS:** The default build targets `osx-arm64` (Apple Silicon). For Intel Macs:
 
 ```bash
 # Requires macOS 13+ with Xcode supporting x86_64
@@ -1105,7 +1113,7 @@ dotnet publish Keystone.App.csproj \
   -c Release -r osx-x64 --self-contained
 ```
 
-To build multi-architecture:
+To build multi-architecture universal binaries:
 ```bash
 # Build both
 python3 build.py --app-only
@@ -1114,9 +1122,20 @@ python3 build.py --app-only -r osx-x64
 # Package with universal flag in plist
 ```
 
-Native libraries (Rust/Go) must also be cross-compiled:
+**Linux:** The default build targets `linux-x64`. For ARM64 Linux:
+
 ```bash
+dotnet publish Keystone.App.csproj \
+  -c Release -r linux-arm64 --self-contained
+```
+
+Native libraries (Rust/Go) must also be cross-compiled for the target platform:
+```bash
+# macOS Intel
 cargo build --release --target x86_64-apple-darwin
+
+# Linux ARM64
+cargo build --release --target aarch64-unknown-linux-gnu
 ```
 
 ---
@@ -1366,7 +1385,7 @@ Web component assets (`.js`/`.css` in `bun/web/`) do ship as files because they'
 
 ### Multi-Architecture Distribution
 
-For universal binaries (Apple Silicon + Intel):
+**macOS — universal binaries (Apple Silicon + Intel):**
 
 ```bash
 # Build for arm64
@@ -1381,6 +1400,10 @@ lipo -create \
   Keystone.App/bin/Release/net10.0-macos/osx-x64/Keystone.App/Contents/MacOS/Keystone.App \
   -output Keystone.App/Contents/MacOS/Keystone.App-universal
 ```
+
+**Linux — x64 and ARM64:**
+
+Build separate binaries for each target. Use the `-r` flag to select the runtime identifier (`linux-x64`, `linux-arm64`). Native Rust libraries must also be built for each target separately.
 
 ### Custom Build Categories
 

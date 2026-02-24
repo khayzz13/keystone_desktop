@@ -1,6 +1,8 @@
 # Window Chrome
 
-By default Keystone windows use a native macOS titled window with a transparent title bar — your web component fills the entire frame, native traffic lights (close/minimize/zoom) appear at the standard position, and the window gets compositor-level rounded corners. This is the right choice for most apps.
+> **Platform note:** This document describes window chrome behavior with a focus on macOS (AppKit/NSWindow). On Linux (GTK4), Keystone provides equivalent window management — native window decorations, title bar styles, floating window levels, and GPU-rendered chrome — using GTK4 window APIs. The configuration surface (`titleBarStyle`, `floating`, `nativeWindow.*`) is the same on both platforms; visual details follow each platform's native conventions.
+
+By default Keystone windows use a native titled window with a transparent title bar — your web component fills the entire frame, native window controls (close/minimize/zoom on macOS, GTK4 decorations on Linux) appear at the standard position, and the window gets compositor-level rounded corners where the platform supports it. This is the right choice for most apps.
 
 For apps that want a custom GPU-rendered title bar with tabs, float toggle, and tiling support, set `titleBarStyle: "toolkit"`. For fully frameless windows with no chrome at all, use `"none"`.
 
@@ -10,17 +12,17 @@ For apps that want a custom GPU-rendered title bar with tabs, float toggle, and 
 
 Out of the box, a window declared in `keystone.json` gets:
 
-- Native macOS traffic lights (close, minimize, zoom)
-- Compositor-level rounded corners
+- Native window controls (traffic lights on macOS, GTK4 header bar buttons on Linux)
+- Compositor-level rounded corners (macOS; Linux follows the compositor/window manager)
 - Standard window shadow
 - Normal z-ordering (not floating)
-- Your web component fills the full window area, including behind the traffic lights
+- Your web component fills the full window area, including behind the native controls
 
-This is the standard macOS look. No extra config needed.
+This is the standard platform look. No extra config needed.
 
 ### Making the window draggable
 
-With the default `"hidden"` style, there's no visible native title bar. Set `-webkit-app-region: drag` on any element you want to act as the drag handle:
+With the default `"hidden"` style, there's no visible native title bar. Set `-webkit-app-region: drag` on any element you want to act as the drag handle (supported on both macOS and Linux via WebKit):
 
 ```css
 .titlebar {
@@ -35,9 +37,9 @@ With the default `"hidden"` style, there's no visible native title bar. Set `-we
 
 This tells WebKit to forward mouse events in that region to the window's native drag behavior.
 
-### Traffic light inset
+### Window control inset
 
-The native traffic lights sit at approximately (12, 12) from the top-left. Your web content should leave space for them — typically `padding-top: 38px` and `padding-left: 78px` on your title bar region, or use a transparent drag region that spans the top of the window.
+On macOS, the native traffic lights sit at approximately (12, 12) from the top-left. On Linux with GTK4, window controls are typically on the right side of the header. Leave space for them in your layout — typically `padding-top: 38px` on macOS, or adjust for the platform's control placement. Using a transparent drag region that spans the full top of the window works on both platforms.
 
 ---
 
@@ -87,13 +89,13 @@ To go completely frameless — no title bar, no traffic lights, no rounded corne
 }
 ```
 
-Note: frameless windows on macOS won't have the standard drop shadow unless you add it from the native layer. For most cases the default `"hidden"` is the right choice — `"none"` is for fully custom shapes or floating panels.
+Note: frameless windows on macOS won't have the standard drop shadow unless you add it from the native layer. On Linux, shadow behavior depends on the compositor. For most cases the default `"hidden"` is the right choice — `"none"` is for fully custom shapes or floating panels.
 
 ---
 
 ## Floating Windows
 
-By default, windows use normal z-ordering — they participate in standard macOS window layering and don't float above other apps. To make a window always-on-top, set `floating: true`:
+By default, windows use normal z-ordering and don't float above other apps. To make a window always-on-top, set `floating: true`:
 
 ```jsonc
 {
@@ -125,13 +127,13 @@ const isFloating = await nativeWindow.isFloating();
 
 ### Rounded corners
 
-macOS handles rounded corners at the compositor level for titled windows. With the default `"hidden"` style, the native window still has rounded corners — your web content is clipped to that shape automatically.
+On macOS, the compositor handles rounded corners at the native level for titled windows. With the default `"hidden"` style, the native window still has rounded corners — your web content is clipped to that shape automatically. With `"toolkit"` or `"none"` (borderless), macOS does not provide compositor-level rounding.
 
-With `"toolkit"` or `"none"` (borderless), macOS does not provide compositor-level rounding.
+On Linux, rounded corners depend on the compositor (e.g. Mutter/GNOME, KWin/KDE). Keystone doesn't override compositor-managed rounding.
 
 ### Fullscreen and zoom
 
-The native zoom (green traffic light) button works with the default `"hidden"` style. `nativeWindow.maximize()` from the bridge calls `NSWindow.Zoom`. If you want to intercept or disable zoom, register an invoke handler or override the action in your app layer.
+On macOS, the native zoom (green traffic light) button works with the default `"hidden"` style. `nativeWindow.maximize()` from the bridge triggers the platform maximize behavior. If you want to intercept or disable it, register an invoke handler or override the action in your app layer.
 
 ---
 
@@ -169,7 +171,9 @@ const windowId = await nativeWindow.open("settings");
 
 ## Controlling Chrome from C#
 
-For precise control over window style at the `NSWindow` level, use a custom `IWindowPlugin` or register an `OnBeforeRun` hook in your `ICorePlugin`. The `ManagedWindow` exposes the underlying `NSWindow` through the platform layer.
+For precise control over window style at the native window level, use a custom `IWindowPlugin` or register an `OnBeforeRun` hook in your `ICorePlugin`. The `ManagedWindow` exposes the underlying native window through the platform layer.
+
+**macOS (NSWindow):**
 
 ```csharp
 // In ICorePlugin.Initialize()
@@ -186,7 +190,20 @@ context.OnBeforeRun += () =>
 };
 ```
 
-This is the escape hatch for anything not covered by `titleBarStyle` — vibrancy, custom window levels, sheet attachment, etc.
+**Linux (GTK4):**
+
+```csharp
+context.OnBeforeRun += () =>
+{
+    foreach (var win in ApplicationRuntime.Instance!.WindowManager.GetAllWindows())
+    {
+        // Access GTK window via the platform layer for GTK4-specific customizations
+        win.PlatformWindow?.SetDecorated(false);
+    }
+};
+```
+
+This is the escape hatch for anything not covered by `titleBarStyle` — custom window levels, vibrancy (macOS), GTK CSS overrides (Linux), etc.
 
 ---
 
@@ -194,12 +211,12 @@ This is the escape hatch for anything not covered by `titleBarStyle` — vibranc
 
 | Goal | Setting |
 |------|---------|
-| Standard macOS look (traffic lights, rounded corners) | Default (no config needed) |
-| Web controls everything, traffic lights present | Default (`"hidden"`) |
+| Standard platform look (native window controls, rounded corners) | Default (no config needed) |
+| Web controls everything, native controls present | Default (`"hidden"`) |
 | GPU title bar with tabs/tiling | `"titleBarStyle": "toolkit"` |
 | Completely frameless | `"titleBarStyle": "none"` |
 | Always-on-top | `"floating": true` |
-| Per-window native NSWindow control | C# app layer via `IWindowPlugin` or `OnBeforeRun` hook |
+| Per-window native window control | C# app layer via `IWindowPlugin` or `OnBeforeRun` hook |
 
 ---
 

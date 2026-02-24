@@ -14,7 +14,7 @@ There are five plugin types. Each interface serves a distinct purpose.
 | `IServicePlugin` | Background work, main-thread services, system integration | Background or main (your choice) |
 | `ILogicPlugin` | Render/compute logic, GPU pipelines, per-window processing | Window render thread |
 | `ILibraryPlugin` | Shared code, utilities, and infrastructure reused by other plugins | Any |
-| `IWindowPlugin` | Full native windows with Metal/Skia rendering | Window render thread |
+| `IWindowPlugin` | Full native windows with GPU/Skia rendering | Window render thread |
 
 All five are discovered automatically when their DLL appears in a configured plugin directory. No per-plugin registration in `keystone.json` is required.
 
@@ -223,27 +223,28 @@ public interface ILogicPlugin
 | `100` | Overlays |
 | `200` | HUD / debug |
 
-**`RequiresGpu`** signals that this plugin will use Metal compute shaders or GPU buffers. When set, `RenderContext.Gpu` provides `IGpuContext` — cast to `WindowGpuContext` for the concrete Metal device and command queue.
+**`RequiresGpu`** signals that this plugin will use GPU compute or GPU buffers. When set, `RenderContext.Gpu` provides `IGpuContext` — cast to `WindowGpuContext` (macOS) or `VulkanGpuContext` (Linux) for the concrete GPU device and command queue.
 
 **`Dependencies`** — data source keys this plugin consumes. Apps define their own dependency key convention.
 
 ### GPU Compute Access
 
-`RenderContext.Gpu` exposes `IGpuContext`, which provides object-typed accessors to the per-window Metal state:
+`RenderContext.Gpu` exposes `IGpuContext`, which provides object-typed accessors to the per-window GPU state:
 
 ```csharp
 public interface IGpuContext
 {
-    object Device { get; }           // IMTLDevice — shared, thread-safe
-    object Queue { get; }            // IMTLCommandQueue — per-window
+    object Device { get; }           // IMTLDevice (macOS) / VkDevice (Linux) — shared, thread-safe
+    object Queue { get; }            // IMTLCommandQueue (macOS) / VkQueue (Linux) — per-window
     object GraphicsContext { get; }  // GRContext — per-window, NOT thread-safe
-    object? ImportTexture(IntPtr textureHandle, int width, int height);  // Metal → Skia
+    object? ImportTexture(IntPtr textureHandle, int width, int height);  // GPU texture → Skia
 }
 ```
 
-Cast to `WindowGpuContext` for strongly-typed access:
+Cast to `WindowGpuContext` (macOS) or `VulkanGpuContext` (Linux) for strongly-typed access:
 
 ```csharp
+// macOS
 if (ctx.Gpu is not WindowGpuContext gpu) return;
 
 // Now you have:
@@ -253,7 +254,7 @@ if (ctx.Gpu is not WindowGpuContext gpu) return;
 // gpu.CreateImageFromTexture(handle, w, h) — import Metal texture into Skia
 ```
 
-From there, the plugin decides how to organize its GPU state — embedded Metal shader strings, persistent buffers, per-window compute pipelines, etc. Since logic plugins are attached to a window, per-window state management is natural (static dictionary keyed by window ID, or instance fields if using per-window plugin instances).
+From there, the plugin decides how to organize its GPU state — shader code, persistent buffers, per-window compute pipelines, etc. Since logic plugins are attached to a window, per-window state management is natural (static dictionary keyed by window ID, or instance fields if using per-window plugin instances).
 
 ### Example — GPU downsampler
 
@@ -349,7 +350,7 @@ Any other plugin that references `SharedTheme.dll` in its csproj will automatica
 
 ## `IWindowPlugin` — Native Windows
 
-Window plugins render full Metal/Skia windows. They run on the window's dedicated render thread, called at vsync. See [C# App Layer](./csharp-app-layer.md) for the full `IWindowPlugin` and `WindowPluginBase` reference, scene graph API, hit testing, workspace serialization, and immediate-mode Skia usage.
+Window plugins render full GPU/Skia windows. They run on the window's dedicated render thread, called at vsync. See [C# App Layer](./csharp-app-layer.md) for the full `IWindowPlugin` and `WindowPluginBase` reference, scene graph API, hit testing, workspace serialization, and immediate-mode Skia usage.
 
 ---
 
@@ -408,10 +409,10 @@ dylib/
 ├── SharedUI.dll            # ILibraryPlugin (depended on by window plugins)
 ├── ContentWindow.dll       # IWindowPlugin (depends on AppCore + SharedUI)
 └── native/
-    └── libmynative.dylib   # Rust/C native library loaded via [DllImport]
+    └── libmynative.dylib   # Rust/C native library (macOS: .dylib, Linux: .so)
 ```
 
-The `native/` subdirectory is where Rust or C dylibs go. Plugin assemblies that use `[DllImport]` are resolved in `dylib/` first, then `dylib/native/`.
+The `native/` subdirectory is where Rust or C native libraries go. Plugin assemblies that use `[DllImport]` are resolved in `dylib/` first, then `dylib/native/`.
 
 ---
 
@@ -462,14 +463,14 @@ From this point, any DLL in `dylib/` that implements `IChartPlugin` is discovere
 
 ## Build Setup
 
-A plugin csproj targets `net10.0-macos` with `osx-arm64` and references the engine projects. Critical settings:
+A plugin csproj targets the appropriate TFM for the platform (`net10.0-macos` for macOS, `net10.0` for Linux) and references the engine projects. Critical settings:
 
 - **`EnableDynamicLoading`** — required for collectible `AssemblyLoadContext` (hot-reload)
 - **`<Private>false</Private>`** on engine references — prevents copying engine DLLs into plugin output
 - **`CopyLocalLockFileAssemblies: false`** — prevents copying transitive NuGet dependencies
 - **`AllowUnsafeBlocks`** — needed for plugins touching GPU buffers or native memory
 
-### Standard plugin csproj
+### Standard plugin csproj (macOS)
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
@@ -497,10 +498,42 @@ A plugin csproj targets `net10.0-macos` with `osx-arm64` and references the engi
 </Project>
 ```
 
+### Standard plugin csproj (Linux)
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AssemblyName>MyPlugin</AssemblyName>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../keystone/Keystone.Core/Keystone.Core.csproj"><Private>false</Private></ProjectReference>
+    <ProjectReference Include="../../keystone/Keystone.Core.Runtime/Keystone.Core.Runtime.csproj"><Private>false</Private></ProjectReference>
+    <ProjectReference Include="../../keystone/Keystone.Core.Management/Keystone.Core.Management.csproj"><Private>false</Private></ProjectReference>
+  </ItemGroup>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="../dylib/" />
+  </Target>
+</Project>
+```
+
 ### Additional references for GPU plugins
 
 ```xml
+  <!-- macOS -->
   <ProjectReference Include="../../keystone/Keystone.Core.Graphics.Skia/Keystone.Core.Graphics.Skia.csproj">
+    <Private>false</Private>
+  </ProjectReference>
+
+  <!-- Linux -->
+  <ProjectReference Include="../../keystone/Keystone.Core.Graphics.Skia.Vulkan/Keystone.Core.Graphics.Skia.Vulkan.csproj">
     <Private>false</Private>
   </ProjectReference>
 ```
