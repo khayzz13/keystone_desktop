@@ -77,7 +77,7 @@ A `keystone.json` manifest declares your app. Windows, plugins, Bun config, proc
 A web component is a TypeScript file that exports `mount` and optionally `unmount`. Bun discovers, bundles, and serves it automatically:
 
 ```typescript
-import { invoke, subscribe } from "@keystone-desktop/sdk/bridge";
+import { invoke, subscribe } from "@keystone/sdk/bridge";
 
 export function mount(root: HTMLElement, ctx: SlotContext) {
   // Full DOM, any framework, any structure
@@ -221,6 +221,8 @@ python3 build.py
 - [C# App Layer](docs/csharp-app-layer.md)
 - [Native Window API](docs/native-api.md)
 - [Configuration Reference](docs/configuration.md)
+- [Window Chrome](docs/window-chrome.md)
+- [Workers](docs/workers.md)
 - [Build & Packaging](docs/build-and-packaging.md)
 
 ## License

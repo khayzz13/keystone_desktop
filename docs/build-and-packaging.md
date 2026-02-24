@@ -193,7 +193,8 @@ When set, packager copies the DLL into the bundle under `Resources/`. At runtime
   "bun": {
     "enabled": true,
     "root": "bun",
-    "compiledExe": null
+    "compiledExe": null,
+    "compiledWorkerExe": null
   }
 }
 ```
@@ -202,9 +203,10 @@ When set, packager copies the DLL into the bundle under `Resources/`. At runtime
 |-------|------|---------|---------|
 | `enabled` | bool | true | Start Bun subprocess at app launch |
 | `root` | string | "bun" | Directory containing `package.json` and TypeScript source |
-| `compiledExe` | string | null | **Set by packager only.** Name of compiled Bun executable (relative to MacOS/ directory) |
+| `compiledExe` | string | null | **Set by packager only.** Name of compiled main host executable (relative to MacOS/ directory). All main host services are statically imported and compiled into this exe. |
+| `compiledWorkerExe` | string | null | **Set by packager only.** Name of compiled worker executable (relative to MacOS/ directory). All worker services are statically imported and compiled into this exe, keyed by worker name. |
 
-The `compiledExe` field is computed during packaging. Set `keystone.config.ts` in your Bun root to configure Bun's internal behavior (ports, routes, etc.).
+Both `compiledExe` and `compiledWorkerExe` are computed during packaging. In development, these are `null` and Bun runs `host.ts` / `worker-host.ts` directly with dynamic service discovery from the filesystem. Set `keystone.config.ts` in your Bun root to configure Bun's internal behavior (ports, routes, etc.).
 
 #### Windows Section
 
@@ -509,11 +511,11 @@ The packager executes these steps in order:
 6. **App Icon** — Copy `icons/AppIcon.icns` → `Resources/`
 7. **Plugins** — Either bundle into `Resources/dylib/` or note external dir
 8. **App Assembly** — Copy C# entry point (if `appAssembly` set)
-9. **Compile Bun** — `bun build --compile host.ts → MacOS/{SafeName}`
+9. **Compile Bun** — Services are statically imported into a wrapper entrypoint, then compiled via `bun build --compile` into standalone executables (`MacOS/{SafeName}` for main host, `MacOS/{SafeName}-worker` for workers). No raw `.ts` source ships.
 10. **Scripts** — Copy `scripts/` directory
 11. **Extra Resources** — Copy files listed in `build.extraResources`
 12. **Icon Directory** — Copy full `icons/` tree
-13. **Runtime Config** — Generate `Resources/keystone.config.json` (stripped + transformed)
+13. **Runtime Config** — Generate `Resources/keystone.config.json` (stripped + transformed) and `Resources/bun/keystone.resolved.json` (pre-resolved Bun config with all defaults applied)
 14. **Entitlements** — Hardened runtime base, patch in external-signatures if needed
 15. **Code Signing** — `codesign --deep --sign` with selected identity + entitlements
 16. **Quarantine Flag** — Remove `com.apple.quarantine` attribute
@@ -537,17 +539,22 @@ dist/
 └── MyApp.app
     └── Contents/
         ├── MacOS/
-        │   ├── MyApp (executable)
+        │   ├── MyApp (main host — compiled exe with all main services baked in)
+        │   ├── MyApp-worker (worker host — compiled exe with all worker services baked in)
         │   ├── libkeystone_layout.dylib
-        │   └── ...
+        │   └── ... (.NET runtime, framework assemblies)
         ├── Resources/
-        │   ├── keystone.config.json (runtime config)
-        │   ├── bun/ (compiled Bun runtime)
-        │   ├── dylib/ (if bundled mode)
+        │   ├── keystone.config.json (runtime config — stripped + transformed)
+        │   ├── bun/
+        │   │   ├── keystone.resolved.json (pre-resolved Bun config with defaults)
+        │   │   └── web/ (bundled web components — .js and .css only)
+        │   ├── dylib/ (if bundled mode — C# plugin DLLs)
         │   ├── icons/
         │   └── ...
         └── Info.plist (generated from template)
 ```
+
+The `bun/` directory in the bundle is minimal — only `keystone.resolved.json` and pre-built web assets. No `.ts` source files, no `node_modules/`, no `services/` or `workers/` directories. All service code is compiled into the executables in `MacOS/`.
 
 ---
 
@@ -747,18 +754,23 @@ For **bundled mode**:
 }
 ```
 
-**4. Set compiled Bun executable**
+**4. Set compiled Bun executables**
 
 If Bun was compiled:
 ```json
 {
   "bun": {
-    "compiledExe": "MyApp"    // Relative to MacOS/
+    "compiledExe": "MyApp",           // main host exe — relative to MacOS/
+    "compiledWorkerExe": "MyApp-worker"  // worker exe — relative to MacOS/ (if workers configured)
   }
 }
 ```
 
-**5. Write to bundle**
+**5. Pre-resolve Bun config**
+
+The packager reads `bun/keystone.config.ts`, applies all defaults, and writes `keystone.resolved.json` into the bundle. This allows the compiled exe to skip dynamic config loading and `import.meta.dir` resolution (which points to the read-only `/$bunfs/` virtual filesystem inside compiled exes).
+
+**6. Write to bundle**
 
 ```
 dist/MyApp.app/Contents/Resources/keystone.config.json
@@ -1250,6 +1262,80 @@ Check:
 2. `plugins.dir` points to correct location
 3. Plugin DLLs exist: `ls dylib/*.dll`
 4. Logs: `tail -f /tmp/keystone.log | grep -i "plugin\|loader"`
+
+---
+
+## Compiled Service Embedding
+
+In development, services are discovered dynamically from the filesystem — `host.ts` scans `services/` and `worker-host.ts` scans the worker's `servicesDir`. For distribution, all service code is compiled directly into the executable. No raw `.ts` files ship.
+
+### How It Works
+
+At package time, the packager:
+
+1. **Discovers services** — Scans the service directories for `.ts` files and directories with `index.ts`.
+2. **Generates a wrapper entrypoint** — A temporary `.ts` file that statically imports all service modules, registers them on `globalThis.__KEYSTONE_COMPILED_SERVICES__`, then dynamically imports `host.ts` or `worker-host.ts`.
+3. **Compiles the wrapper** — `bun build --compile` bundles the wrapper + all static imports into a single native executable.
+4. **Deletes the wrapper** — The temp file is cleaned up. Only the compiled exe remains.
+
+The wrapper pattern ensures that `bun build --compile` captures all service code via static imports, while `host.ts` is loaded via dynamic `await import()` so its module-level code runs after the global registry is set.
+
+### Main Host Wrapper (generated at package time)
+
+```typescript
+import * as _svc0 from "/path/to/services/metrics.ts";
+import * as _svc1 from "/path/to/services/file-scanner.ts";
+
+(globalThis as any).__KEYSTONE_COMPILED_SERVICES__ = {
+  "metrics": _svc0,
+  "file-scanner": _svc1,
+};
+
+await import("/path/to/host.ts");
+```
+
+### Worker Wrapper (all workers in one exe)
+
+Worker services are keyed by worker name. One compiled exe serves all workers — the `KEYSTONE_WORKER_NAME` environment variable determines which services to load at runtime.
+
+```typescript
+import * as _w0s0 from "/path/to/workers/media/metadata.ts";
+import * as _w0s1 from "/path/to/workers/media/thumbnails.ts";
+
+(globalThis as any).__KEYSTONE_COMPILED_SERVICES__ = {
+  "media": {
+    "metadata": _w0s0,
+    "thumbnails": _w0s1,
+  },
+};
+
+await import("/path/to/worker-host.ts");
+```
+
+### Runtime Detection
+
+`host.ts` and `worker-host.ts` check for the compiled registry before falling back to filesystem discovery:
+
+```typescript
+const compiled = (globalThis as any).__KEYSTONE_COMPILED_SERVICES__;
+if (compiled) {
+    // Use baked-in services — no filesystem access needed
+    for (const [name, mod] of Object.entries(compiled)) { ... }
+    console.error(`[host] compiled mode: ${services.size} services`);
+    return;
+}
+// Dev mode — discover from filesystem
+```
+
+### Source Code Protection
+
+Since all service code is compiled into the executable:
+- No `.ts` or `.js` service files ship in the bundle
+- No `node_modules/` directory ships
+- No `services/` or `workers/` directories ship
+- Source code is protected at the binary level — same as any compiled language
+
+Web component assets (`.js`/`.css` in `bun/web/`) do ship as files because they're served via HTTP to the browser. This is inherent to how browsers work and identical to Electron — the browser-facing code is always inspectable.
 
 ---
 

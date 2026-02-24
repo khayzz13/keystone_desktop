@@ -214,6 +214,28 @@ export default defineConfig({
 
 ---
 
+## Compiled Distribution
+
+When you package your app with `python3 build.py --package`, services are compiled directly into the executable. No `.ts` source files ship in the bundle.
+
+The packager generates a wrapper that statically imports all service modules and registers them on a global before loading `host.ts`. At runtime, `host.ts` checks for this global and uses the baked-in services instead of scanning the filesystem:
+
+```
+Development:  host.ts → readdirSync("services/") → require() each .ts file
+Distribution: compiled exe → __KEYSTONE_COMPILED_SERVICES__ global → all services already loaded
+```
+
+This means:
+- **Source code is protected** — service logic is inside the compiled binary, not inspectable
+- **No filesystem dependency** — the exe runs without `node_modules/`, `services/`, or any `.ts` files
+- **Same API** — services work identically in both modes; no code changes needed
+
+The `svc.store` (SQLite) database still lives on disk at `data/services.db` — the store is initialized lazily on first access so it works correctly inside compiled executables where `import.meta.dir` resolves to Bun's read-only virtual filesystem.
+
+See [Build & Packaging — Compiled Service Embedding](./build-and-packaging.md#compiled-service-embedding) for the full compilation pipeline.
+
+---
+
 ## Action Handlers
 
 Services can respond to action strings dispatched from the web layer or C#:

@@ -267,8 +267,25 @@ export async function start(ctx: ServiceContext) {
 
 ---
 
+## Compiled Distribution
+
+When you package your app, worker services are compiled into a single executable alongside the worker host runtime. The packager:
+
+1. Discovers all worker service directories from `keystone.json` workers config
+2. Generates a wrapper entrypoint with static imports of every worker service, keyed by worker name
+3. Compiles the wrapper via `bun build --compile` into `Contents/MacOS/{AppName}-worker`
+
+At runtime, `worker-host.ts` checks for `__KEYSTONE_COMPILED_SERVICES__[WORKER_NAME]` and uses the baked-in services for that worker. One compiled exe serves all workers — the `KEYSTONE_WORKER_NAME` environment variable determines which subset of services to load.
+
+No `.ts` source files, `node_modules/`, or worker service directories ship in the bundle. The `data/services.db` SQLite store still lives on disk.
+
+See [Build & Packaging — Compiled Service Embedding](./build-and-packaging.md#compiled-service-embedding) for the full compilation pipeline.
+
+---
+
 ## Next
 
 - [Bun Services](./bun-services.md) — service authoring reference (same contract for workers)
 - [Process Model](./process-model.md) — how all processes relate
 - [Configuration Reference](./configuration.md) — `workers` config in `keystone.json`
+- [Build & Packaging](./build-and-packaging.md) — packaging, compiled executables, distribution

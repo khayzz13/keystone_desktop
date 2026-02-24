@@ -5,7 +5,7 @@ Keystone is in early development. This is a transparent list of what's not done 
 ## Not Built Yet
 
 - **macOS only.** The rendering pipeline, window system, and process model are all AppKit/Metal-specific. Windows and Linux support is planned but not started.
-- **No scaffolding CLI.** Projects are created by copying an example or setting things up manually.
+- **No scaffolding CLI beyond the basics.** `tools/create-app.py` bootstraps new projects, but there's no `keystone add service` / `keystone add plugin` style generator yet.
 - **Workspace persistence.** The plugin interfaces for save/restore exist, but the full cycle isn't wired end-to-end.
 - **Theming.** CSS custom property tokens are pushed to web components on connect. A full design token schema, live theme switching, and dark/light mode integration are partial.
 - **Multi-window management.** Opening windows from the web layer works. Split panes, floating panels, and tab groups are not implemented.

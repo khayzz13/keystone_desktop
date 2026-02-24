@@ -16,14 +16,11 @@ Native macOS desktop runtime. Metal/Skia rendering, Bun-powered web components, 
 - **[C# App Layer](./csharp-app-layer.md)** — `ICorePlugin`, custom `invoke()` handlers, native Metal/Skia windows, lifecycle events
 - **[Plugin System](./plugin-system.md)** — hot-reloadable DLL plugins: service, logic, library, and window types
 - **[HTTP Router](./http-router.md)** — optional `fetch()`-compatible router over the invoke() bridge; or use `invoke()`/`RegisterInvokeHandler` directly
+- **[Workers](./workers.md)** — additional Bun processes for parallelism and extension isolation
 
 ## Reference
 
 - **[Native API Reference](./native-api.md)** — all built-in `invoke` channels, `action` strings, bridge API
 - **[Configuration Reference](./configuration.md)** — `keystone.json` and `bun/keystone.config.ts` full schema
 - **[Window Chrome](./window-chrome.md)** — controlling the native window surface: full-bleed web, traffic lights only, or native chrome
-
-## Examples
-
-- `examples/docs-viewer/` — web-only app (no C#) that renders markdown documentation
-- `examples/my-app/` — app with a C# layer and hot-reloadable plugins
+- **[Build & Packaging](./build-and-packaging.md)** — build pipeline, packaging, distribution, compiled executables

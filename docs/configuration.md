@@ -39,6 +39,7 @@ Lives at the root of your app directory. Controls the C# host process.
   "bun": {
     "enabled": true,
     "root": "bun"             // path to app's bun directory, relative to keystone.json
+    // compiledExe and compiledWorkerExe are set by the packager — don't set manually
   },
 
   // Optional C# app assembly — omit if no native app layer
@@ -124,11 +125,15 @@ _windowManager.SpawnWindow("dashboard");
   "bun": {
     "enabled": true,    // set false to disable Bun entirely (pure native mode)
     "root": "bun"       // relative path to the directory containing keystone.config.ts
+    // compiledExe: "MyApp"          — set by packager only
+    // compiledWorkerExe: "MyApp-worker"  — set by packager only
   }
 }
 ```
 
 When `enabled: false` or the `bun` block is absent, no Bun process is started. All `subscribe()`, `query()`, and WebSocket-based features are unavailable. `invoke()` still works because it bypasses Bun.
+
+`compiledExe` and `compiledWorkerExe` are set by the packager during `--package`. They point to the compiled executables in `Contents/MacOS/` that contain all service code baked in. In development, these are absent and Bun runs the raw `.ts` files with dynamic service discovery. See [Build & Packaging — Compiled Service Embedding](./build-and-packaging.md#compiled-service-embedding) for details.
 
 ### `plugins`
 
@@ -237,6 +242,8 @@ export default defineConfig({
 
 All sections are optional. Missing sections use defaults.
 
+At package time, the packager resolves this config (applies all defaults) and writes it as `bun/keystone.resolved.json` in the bundle. The compiled exe reads this pre-resolved config directly, avoiding the need to locate and import `keystone.config.ts` from the read-only `/$bunfs/` virtual filesystem.
+
 ### `services`
 
 ```typescript
@@ -253,6 +260,7 @@ web: {
     dir: "web",           // auto-discovery directory for .ts/.tsx files. Default: "web"
     autoBundle: true,     // bundle components on startup. Default: true
     hotReload: true,      // rebundle and send HMR on file change. Default: true
+    preBuilt: false,      // set by packager — skip Bun.build(), serve existing .js/.css. Default: false
 
     // Explicit name → entry path mappings (relative to bun root).
     // These are bundled in addition to auto-discovered web/ files.
@@ -267,6 +275,8 @@ web: {
 `web.components` lets you put source files anywhere — no required folder structure. Explicit entries and auto-discovered `web/*.ts` files coexist. When the same name appears in both, the explicit entry wins.
 
 Setting `autoBundle: false` means components aren't pre-bundled at startup — they bundle on first request, adding latency to the first load.
+
+`preBuilt` is set by the packager in the resolved config for distribution bundles. When `true`, `host.ts` skips `Bun.build()` entirely and serves the existing `.js`/`.css` files from `web/`. HMR and file watching are disabled.
 
 ### `http`
 
