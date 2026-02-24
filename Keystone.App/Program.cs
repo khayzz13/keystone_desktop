@@ -1,9 +1,9 @@
 using System;
 using System.IO;
-using AppKit;
 using Keystone.Core;
 using Keystone.Core.Graphics.Skia;
 using Keystone.Core.Platform;
+using Keystone.Core.Platform.MacOS;
 using Keystone.Core.Runtime;
 
 namespace Keystone.App;
@@ -41,12 +41,12 @@ class Program
             if (Directory.Exists(nativePath))
                 NativeLibraryLoader.AddSearchPath(nativePath);
         }
-        NSApplication.Init();
-        NativeAppKit.ActivateApp();
+        var platform = new MacOSPlatform();
+        platform.Initialize();
         SkiaWindow.Initialize();
 
         // Create, initialize, and run
-        var runtime = new ApplicationRuntime(config, rootDir);
+        var runtime = new ApplicationRuntime(config, rootDir, platform);
         runtime.Initialize();
 
         Console.WriteLine("[Keystone] Entering main loop...");

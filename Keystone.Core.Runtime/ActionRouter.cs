@@ -90,7 +90,7 @@ public class ActionRouter
             Process.Start(new ProcessStartInfo(logPath) { UseShellExecute = true });
         }
         else if (action == "bring_all_front")
-            NativeAppKit.BringAllWindowsToFront();
+            _windowManager.BringAllWindowsToFront();
         else if (action.StartsWith("run_tool:"))
             ScriptManager.RunTool(action[9..]);
         else if (action.StartsWith("open_url:"))

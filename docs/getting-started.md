@@ -2,7 +2,15 @@
 
 ## Requirements
 
+**macOS:**
 - macOS 15+ (Apple Silicon)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
+- Rust toolchain — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+
+**Linux:**
+- GTK4 and WebKitGTK 4.1 (`libgtk-4-dev`, `libwebkit2gtk-4.1-dev`)
+- Vulkan drivers and headers (`vulkan-tools`, `libvulkan-dev`)
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
 - Rust toolchain — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
@@ -143,7 +151,7 @@ import { keystone, action, invoke, subscribe, query, app, dialog, nativeWindow, 
 
 ### Talking to C# — `invoke()`
 
-`invoke()` sends a request directly to a C# handler and returns a Promise. No Bun round-trip — uses `WKScriptMessageHandler` for minimal latency.
+`invoke()` sends a request directly to a C# handler and returns a Promise. No Bun round-trip — goes through the WebKit script message handler for minimal latency.
 
 ```typescript
 // Built-in handlers
@@ -197,13 +205,13 @@ TypeScript UI + Bun services. No C#. Covers the built-in `invoke()` API surface 
 
 ### Web + Native C#
 
-TypeScript UI + Bun services + C# app layer. Register custom `invoke()` handlers, control window lifecycle, use any macOS API. Required for anything beyond the built-in API surface.
+TypeScript UI + Bun services + C# app layer. Register custom `invoke()` handlers, control window lifecycle, use platform APIs. Required for anything beyond the built-in API surface.
 
 Add an `app/` directory with a `.csproj` and implement `ICorePlugin`. `build.py` detects the csproj automatically.
 
 ### Pure Native (C# only)
 
-Metal/Skia rendering with no WebView, no Bun. Maximum performance — every pixel rendered by your plugin in the GPU pipeline.
+GPU/Skia rendering with no WebView, no Bun. Maximum performance — every pixel rendered by your plugin in the GPU pipeline (Metal on macOS, Vulkan on Linux).
 
 ```json
 {
@@ -235,9 +243,9 @@ When you run a web-mode app:
 2. Bun subprocess spawns. `host.ts` discovers services and web components.
 3. Bun writes a ready signal to stdout: `{ "status": "ready", "port": 3847, ... }`.
 4. C# reads the ready signal. `BunManager` attaches.
-5. First window spawns. C# creates the `NSWindow` + `CAMetalLayer`.
-6. Render thread starts. Metal/Skia draws native chrome if enabled.
-7. A `WKWebView` is created. Loads `/__host__` from Bun.
+5. First window spawns. C# creates the native window (NSWindow on macOS, GtkWindow on Linux) with its GPU surface.
+6. Render thread starts. GPU/Skia draws native chrome if enabled.
+7. A WebKit view is created (WKWebView on macOS, WebKitGTK on Linux). Loads `/__host__` from Bun.
 8. The host page loads your `app.ts` component. `mount(root)` is called.
 9. The bridge `keystone()` client initializes — WebSocket connects, theme tokens apply.
 

@@ -2,7 +2,7 @@
 
 The native API surface is accessible from web components via `invoke()` and `action()`. These are built-in handlers registered on every window by the C# runtime — no additional setup required.
 
-All `invoke()` calls communicate directly with C# via `WKScriptMessageHandler`. There is no Bun round-trip. Handlers run on a thread pool thread so they don't block the main run loop.
+All `invoke()` calls communicate directly with C# via the WebKit script message handler. There is no Bun round-trip. Handlers run on a thread pool thread so they don't block the main run loop.
 
 ---
 
@@ -61,11 +61,11 @@ app.quit();
 import { nativeWindow } from "@keystone/sdk/bridge";
 ```
 
-All window actions target the **current window** — the native `NSWindow` that owns the `WKWebView` slot this component is mounted in.
+All window actions target the **current window** — the native window that owns the WebKit slot this component is mounted in.
 
 ### `nativeWindow.setTitle(title): Promise<void>`
 
-Sets the `NSWindow` title bar text.
+Sets the window title bar text.
 
 ```typescript
 await nativeWindow.setTitle("My App — Untitled");
@@ -73,15 +73,15 @@ await nativeWindow.setTitle("My App — Untitled");
 
 ### `nativeWindow.minimize(): void`
 
-Minimizes the window to the Dock. Fire-and-forget via `action()`.
+Minimizes the window. Fire-and-forget via `action()`.
 
 ### `nativeWindow.maximize(): void`
 
-Zooms/maximizes the window (`NSWindow.Zoom`). Fire-and-forget.
+Zooms/maximizes the window. Fire-and-forget.
 
 ### `nativeWindow.close(): void`
 
-Closes the window. If it's the last window, the app continues running (macOS convention). Fire-and-forget.
+Closes the window. If it's the last window, the app continues running. Fire-and-forget.
 
 ### `nativeWindow.open(type): Promise<string>`
 
@@ -101,7 +101,7 @@ const settingsWindowId = await nativeWindow.open("settings");
 import { dialog } from "@keystone/sdk/bridge";
 ```
 
-All dialogs are native macOS panels (`NSOpenPanel`, `NSSavePanel`, `NSAlert`). They run on the main thread and block until dismissed.
+All dialogs are native platform panels. They run on the main thread and block until dismissed.
 
 ### `dialog.openFile(opts?): Promise<string[] | null>`
 
@@ -195,7 +195,7 @@ The URL is passed as-is to the OS. Any scheme the OS can handle works — `https
 
 ### `shell.openPath(path): Promise<boolean>`
 
-Opens a file or directory with its default application (`NSWorkspace.OpenFile`). Returns `true` on success.
+Opens a file or directory with its default application. Returns `true` on success.
 
 ```typescript
 const ok = await shell.openPath("/Users/me/Documents/report.pdf");
@@ -222,7 +222,7 @@ const result = await ks.invoke<{ count: number }>("myapp:scan", { dir: "/tmp" })
 Internally:
 1. Generates a unique request ID
 2. Subscribes one-shot to `window:{windowId}:__reply__:{id}` over WebSocket
-3. Posts `{ ks_invoke: true, id, channel, args, windowId }` via `webkit.messageHandlers.keystone`
+3. Posts `{ ks_invoke: true, id, channel, args, windowId }` via the WebKit script message handler
 4. C# dispatches to the registered handler, awaits result, pushes reply to the channel
 5. Bridge resolves the promise
 
@@ -344,7 +344,7 @@ Custom handlers follow the same rules as built-in ones:
 - Handler receives a `JsonElement` (the `args` object from JS, or `default` if no args were passed)
 - Return value is JSON-serialized and delivered as `reply.result`
 - Throwing an `Exception` delivers `reply.error` and causes the JS promise to reject
-- Handlers run on a thread pool thread — dispatch to main thread for AppKit APIs
+- Handlers run on a thread pool thread — dispatch to main thread for platform UI APIs
 
 ---
 
@@ -354,8 +354,8 @@ These action strings are handled directly by the C# runtime — no service regis
 
 | Action | Effect |
 |--------|--------|
-| `window:minimize` | Minimize current window to Dock |
-| `window:maximize` | Zoom/maximize current window |
+| `window:minimize` | Minimize current window |
+| `window:maximize` | Maximize current window |
 | `window:close` | Close current window |
 | `app:quit` | Quit the application |
 | `shell:openExternal:<url>` | Open URL in default browser |

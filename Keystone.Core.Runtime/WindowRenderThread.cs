@@ -3,23 +3,25 @@
 // When idle: unsubscribes from VSync, sleeps until RequestRedraw sets the signal.
 // Same signal for both paths — no secondary wake mechanism.
 
+#if MACOS
 using Foundation;
-using Keystone.Core.Graphics.Skia;
+#endif
+using Keystone.Core.Rendering;
 
 namespace Keystone.Core.Runtime;
 
 public class WindowRenderThread : IDisposable
 {
     Thread? _thread;
-    readonly WindowGpuContext _gpu;
+    readonly IWindowGpuContext _gpu;
     readonly ManualResetEventSlim _vsyncSignal;
     readonly ManagedWindow _window;
     volatile bool _running;
     bool _disposed;
 
-    public WindowGpuContext Gpu => _gpu;
+    public IWindowGpuContext Gpu => _gpu;
 
-    public WindowRenderThread(ManagedWindow window, WindowGpuContext gpu, ManualResetEventSlim vsyncSignal)
+    public WindowRenderThread(ManagedWindow window, IWindowGpuContext gpu, ManualResetEventSlim vsyncSignal)
     {
         _window = window;
         _gpu = gpu;
@@ -45,10 +47,12 @@ public class WindowRenderThread : IDisposable
             _vsyncSignal.Reset();
             if (!_running) break;
 
+#if MACOS
             // Per-frame autorelease pool — NextDrawable() and other Metal/AppKit calls
             // return autoreleased ObjC objects. Without this, IOSurfaces from old drawables
             // accumulate on the thread's default pool and never drain.
             using var pool = new NSAutoreleasePool();
+#endif
             try
             {
                 if (_window.ShouldRender())

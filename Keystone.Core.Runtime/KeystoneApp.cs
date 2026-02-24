@@ -5,9 +5,14 @@
 // Handles the full bootstrap sequence: platform init → runtime → run loop → shutdown.
 // Apps can use this instead of writing their own Program.cs.
 
-using AppKit;
 using Keystone.Core;
+#if MACOS
 using Keystone.Core.Graphics.Skia;
+using Keystone.Core.Platform.MacOS;
+#else
+using Keystone.Core.Graphics.Skia.Vulkan;
+using Keystone.Core.Platform.Linux;
+#endif
 using Keystone.Core.Platform;
 using Keystone.Core.Plugins;
 
@@ -89,13 +94,14 @@ public class KeystoneApp
 
         Console.WriteLine($"[Keystone] Starting {_config.Name} ({_config.Id})...");
 
-        // Platform init — must happen before ApplicationRuntime
+        // Platform init + runtime bootstrap
+#if MACOS
         NativeLibraryLoader.Initialize();
-        NSApplication.Init();
-        NativeAppKit.ActivateApp();
+        var platform = new MacOSPlatform();
+        platform.Initialize();
         SkiaWindow.Initialize();
 
-        var runtime = new ApplicationRuntime(_config, rootDir);
+        var runtime = new ApplicationRuntime(_config, rootDir, platform);
 
         // Register native plugins after engine init — they'll be available for SpawnInitialWindows
         runtime.OnInitialized += () =>
@@ -110,6 +116,26 @@ public class KeystoneApp
         try { runtime.Run(); }
         catch (Exception ex) { Console.WriteLine($"[Keystone] Fatal: {ex}"); }
         finally { runtime.Shutdown(); }
+#else
+        var platform = new LinuxPlatform();
+        platform.Initialize();
+        VulkanSkiaWindow.Initialize();
+
+        var runtime = new ApplicationRuntime(_config, rootDir, platform);
+
+        runtime.OnInitialized += () =>
+        {
+            foreach (var reg in _registrations)
+                reg(runtime.PluginRegistry);
+        };
+
+        runtime.Initialize();
+
+        Console.WriteLine("[Keystone] Entering main loop...");
+        try { runtime.Run(); }
+        catch (Exception ex) { Console.WriteLine($"[Keystone] Fatal: {ex}"); }
+        finally { runtime.Shutdown(); }
+#endif
     }
 
     private static void SetupLogging()
