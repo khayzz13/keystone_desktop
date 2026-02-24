@@ -21,11 +21,16 @@ bun/Keystone (Server)
 dist/
 examples/*/dist/
 
+# Runtime data (SQLite stores created at runtime)
+**/data/services.db
+
+# Python
+__pycache__/
+
 # Internal docs
 OVERVIEW.md
 CLAUDE.md
 docs/initial plan docs/
-examples/my-app
 
 # macOS
 .DS_Store

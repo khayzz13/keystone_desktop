@@ -24,3 +24,8 @@ Native macOS desktop runtime. Metal/Skia rendering, Bun-powered web components, 
 - **[Configuration Reference](./configuration.md)** — `keystone.json` and `bun/keystone.config.ts` full schema
 - **[Window Chrome](./window-chrome.md)** — controlling the native window surface: full-bleed web, traffic lights only, or native chrome
 - **[Build & Packaging](./build-and-packaging.md)** — build pipeline, packaging, distribution, compiled executables
+
+## Examples
+
+- `examples/docs-viewer/` — web-only app (no C#) that renders markdown documentation
+- `examples/mason/` — media player with C# app layer, React UI, worker processes, and hardware transcoding

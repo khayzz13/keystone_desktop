@@ -1,0 +1,5 @@
+# Mason — Build Configuration
+engine: "0.1.0"
+
+build:
+  category: public.app-category.music

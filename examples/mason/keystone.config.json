@@ -1,0 +1,52 @@
+{
+  "name": "Mason",
+  "id": "com.mason.player",
+  "version": "0.1.0",
+
+  "appAssembly": "app/bin/Release/net10.0-macos/Mason.Core.dll",
+
+  "windows": [
+    {
+      "component": "app",
+      "title": "Mason",
+      "width": 1100,
+      "height": 750,
+      "spawn": true
+    },
+    {
+      "component": "player",
+      "title": "Now Playing",
+      "width": 720,
+      "height": 480,
+      "spawn": false
+    }
+  ],
+
+  "bun": { "root": "bun" },
+
+  "workers": [
+    {
+      "name": "media",
+      "servicesDir": "workers/media",
+      "autoStart": true,
+      "browserAccess": false
+    }
+  ],
+
+  "menus": {
+    "File": [
+      { "title": "Add Folder to Library", "action": "library:addFolder", "shortcut": "Cmd+O" },
+      { "title": "Close Window", "action": "window:close", "shortcut": "Cmd+W" }
+    ],
+    "Playback": [
+      { "title": "Play / Pause", "action": "playback:toggle", "shortcut": "Space" },
+      { "title": "Next Track", "action": "playback:next", "shortcut": "Cmd+Right" },
+      { "title": "Previous Track", "action": "playback:prev", "shortcut": "Cmd+Left" },
+      { "title": "Pop Out Player", "action": "player:popout" }
+    ]
+  },
+
+  "build": {
+    "category": "public.app-category.music"
+  }
+}

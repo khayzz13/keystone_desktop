@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["bun-types"],
+    "paths": {
+      "@keystone/sdk": ["../../../bun/sdk/index.ts"],
+      "@keystone/sdk/*": ["../../../bun/sdk/*.ts"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"]
+}
