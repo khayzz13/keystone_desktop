@@ -46,6 +46,62 @@ def discover_services(svc_dir: Path) -> list:
 
 # ─── Config loading ──────────────────────────────────────────────────────────
 
+def load_build_yaml(app_root: Path) -> dict:
+    """Load keystone.build.yaml. Returns {} if absent."""
+    path = app_root / "keystone.build.yaml"
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(path.read_text()) or {}
+    except ImportError:
+        pass
+    # Minimal nested YAML parser (handles one level of indentation)
+    import re as _re
+    result: dict = {}
+    current_section = None
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line[0].isspace() and ":" in stripped:
+            key, _, val = stripped.partition(":")
+            key = key.strip()
+            val = val.strip()
+            # Strip inline comment
+            if " #" in val:
+                val = val[:val.index(" #")].strip()
+            val = val.strip('"').strip("'")
+            if val:
+                result[key] = val
+            else:
+                result[key] = {}
+                current_section = key
+        elif current_section and line[0].isspace() and ":" in stripped:
+            key, _, val = stripped.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if " #" in val:
+                val = val[:val.index(" #")].strip()
+            val = val.strip('"').strip("'")
+            if val:
+                lv = val.lower()
+                if lv == "true":
+                    val = True
+                elif lv == "false":
+                    val = False
+                elif lv in ("null", "~", ""):
+                    val = None
+                else:
+                    try:
+                        val = int(val)
+                    except ValueError:
+                        pass
+                if isinstance(result[current_section], dict):
+                    result[current_section][key] = val
+    return result
+
+
 def load_config(app_root: Path) -> dict:
     """Load keystone.config.json (or keystone.json fallback) with JSONC support."""
     for name in ["keystone.config.json", "keystone.json"]:
@@ -104,11 +160,9 @@ def find_engine(app_root: Path, explicit: str = None) -> Path:
     sys.exit(1)
 
 
-def find_engine_contents(engine: Path, debug=False) -> Path:
+def find_engine_contents(engine: Path) -> Path:
     """Find the dotnet publish Contents/ directory within the engine."""
-    config_mode = "Debug" if debug else "Release"
-    # Try requested mode first, then fallback
-    for mode in [config_mode, "Release", "Debug"]:
+    for mode in ["Release", "Debug"]:
         src = engine / "Keystone.App" / "bin" / mode / "net10.0-macos" / "osx-arm64" / "Keystone.app" / "Contents"
         if src.exists():
             return src
@@ -117,35 +171,64 @@ def find_engine_contents(engine: Path, debug=False) -> Path:
 
 # ─── Packager ────────────────────────────────────────────────────────────────
 
-def package(app_root: Path, engine: Path, debug=False, mode_override=None,
+def package(app_root: Path, engine: Path, mode_override=None,
             dmg_override=None, allow_external_override=None):
     """Package an app into a distributable .app bundle."""
 
     config = load_config(app_root)
-    build_cfg = config.get("build", {})
+    build_yaml = load_build_yaml(app_root)
 
-    # Resolve build settings (CLI overrides > config > defaults)
+    # Priority: CLI override > keystone.build.yaml > keystone.config.json legacy build: block > defaults
+    legacy_build = config.get("build", {})
+    pkg_cfg = build_yaml.get("package", {}) if isinstance(build_yaml.get("package"), dict) else {}
+    plugins_build = build_yaml.get("plugins", {}) if isinstance(build_yaml.get("plugins"), dict) else {}
+
+    def bval(key_yaml, key_legacy, default):
+        """Read from build yaml first, fall back to legacy runtime config build block."""
+        if key_yaml in pkg_cfg:
+            return pkg_cfg[key_yaml]
+        if key_legacy in legacy_build:
+            return legacy_build[key_legacy]
+        return default
+
     app_name = config.get("name", "Keystone App")
     app_id = config.get("id", "com.keystone.app")
     app_version = config.get("version", "1.0.0")
     safe_name = app_name.replace(" ", "")
 
-    plugin_mode = mode_override or build_cfg.get("pluginMode", "side-by-side")
-    category = build_cfg.get("category", "public.app-category.utilities")
-    out_dir = app_root / build_cfg.get("outDir", "dist")
-    signing_identity = build_cfg.get("signingIdentity") or os.environ.get("KEYSTONE_SIGNING_IDENTITY")
-    require_signing_identity = bool(build_cfg.get("requireSigningIdentity", False))
-    notarize = bool(build_cfg.get("notarize", False))
-    notary_profile = build_cfg.get("notaryProfile") or os.environ.get("KEYSTONE_NOTARY_PROFILE")
-    create_dmg = dmg_override if dmg_override is not None else build_cfg.get("dmg", False)
-    min_version = build_cfg.get("minimumSystemVersion", "15.0")
-    extra_resources = build_cfg.get("extraResources", [])
+    # Plugin mode: CLI > build yaml plugins.mode > legacy build.pluginMode > default
+    plugin_mode = (mode_override
+                   or plugins_build.get("mode")
+                   or legacy_build.get("pluginMode", "side-by-side"))
+
+    category = bval("category", "category", "public.app-category.utilities")
+    out_dir = app_root / bval("out_directory", "outDir", "dist")
+    min_version = bval("minimum_system_version", "minimumSystemVersion", "15.0")
+    create_dmg = dmg_override if dmg_override is not None else bool(bval("dmg", "dmg", False))
+    signing_identity = (pkg_cfg.get("signing_identity")
+                        or legacy_build.get("signingIdentity")
+                        or os.environ.get("KEYSTONE_SIGNING_IDENTITY"))
+    require_signing_identity = bool(bval("require_signing_identity", "requireSigningIdentity", False))
+    notarize = bool(bval("notarize", "notarize", False))
+    notary_profile = (pkg_cfg.get("notary_profile")
+                      or legacy_build.get("notaryProfile")
+                      or os.environ.get("KEYSTONE_NOTARY_PROFILE"))
+    extra_resources_raw = bval("extra_resources", "extraResources", [])
+    extra_resources = extra_resources_raw if isinstance(extra_resources_raw, list) else []
+
+    # dylib directory: build yaml top-level dylib_directory > runtime plugins.dir > "dylib"
+    plugins_dir_name = (build_yaml.get("dylib_directory")
+                        or (config.get("plugins", {}) or {}).get("dir", "dylib"))
 
     plugins_cfg = config.get("plugins", {})
     plugins_enabled = plugins_cfg.get("enabled", True) if isinstance(plugins_cfg, dict) else False
-    allow_external = allow_external_override if allow_external_override is not None else (
-        plugins_cfg.get("allowExternalSignatures", False) if isinstance(plugins_cfg, dict) else False)
-    plugins_dir_name = plugins_cfg.get("dir", "dylib") if isinstance(plugins_cfg, dict) else "dylib"
+
+    # allow_external: CLI > build yaml plugins.allow_external_signatures > runtime > False
+    allow_external = (allow_external_override if allow_external_override is not None
+                      else plugins_build.get("allow_external_signatures",
+                           (plugins_cfg.get("allowExternalSignatures", False)
+                            if isinstance(plugins_cfg, dict) else False)))
+
     user_dir_configured = bool(plugins_cfg.get("userDir", "")) if isinstance(plugins_cfg, dict) else False
     extension_dir_configured = bool(plugins_cfg.get("extensionDir", "")) if isinstance(plugins_cfg, dict) else False
     has_external_dirs = user_dir_configured or extension_dir_configured
@@ -191,7 +274,7 @@ def package(app_root: Path, engine: Path, debug=False, mode_override=None,
 
     # ── 2. Framework runtime (MacOS/ + MonoBundle/) ──────────────────────────
 
-    src_contents = find_engine_contents(engine, debug)
+    src_contents = find_engine_contents(engine)
     if src_contents:
         # Skip engine bun/ inside Resources — step 6 builds bun/ from scratch with
         # pre-bundled assets and compiled exes. The raw .ts engine files are dead weight.
@@ -638,10 +721,8 @@ def main():
         description="Package a Keystone app into a distributable .app bundle")
     parser.add_argument("app_root", type=str,
                         help="Path to the app directory (contains keystone.config.json)")
-    parser.add_argument("--debug", action="store_true",
-                        help="Use Debug configuration for framework binaries")
     parser.add_argument("--mode", choices=["bundled", "side-by-side"],
-                        help="Override build.pluginMode")
+                        help="Override plugins.mode")
     parser.add_argument("--dmg", action="store_true", default=None,
                         help="Create DMG (overrides build.dmg)")
     parser.add_argument("--allow-external", action="store_true", default=None,
@@ -661,7 +742,6 @@ def main():
     package(
         app_root=app_root,
         engine=engine,
-        debug=args.debug,
         mode_override=args.mode,
         dmg_override=args.dmg if args.dmg else None,
         allow_external_override=args.allow_external if args.allow_external else None,

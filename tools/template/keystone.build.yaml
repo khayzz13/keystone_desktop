@@ -1,15 +1,47 @@
 # {{APP_NAME}} — Build Configuration
-# This file controls build-time behavior. Runtime config lives in keystone.config.json.
+# Build-time settings. Runtime config lives in keystone.config.json.
 
-# Engine version to use (auto-downloaded if not found locally)
-engine: "{{KEYSTONE_VERSION}}"
+# ── Paths ─────────────────────────────────────────────────────────────────────
+# All paths relative to this file, or absolute.
 
-# Build / packaging options
-build:
+app_directory: "."                   # app root (contains keystone.config.json)
+framework_directory: "../keystone"   # Keystone engine source or distribution
+
+# Source layout relative to app_directory.
+# bun_directory must match bun.root in keystone.config.json.
+bun_directory: "bun"
+dylib_directory: "dylib"             # C# plugin DLL output directory
+
+# ── Plugins ───────────────────────────────────────────────────────────────────
+plugins:
+  # How C# plugins are delivered in the packaged .app bundle:
+  #   side-by-side  dylib/ stays adjacent to the .app — supports hot-reload and 3rd-party dev
+  #   bundled       plugin DLLs are embedded inside the bundle (immutable, no hot-reload)
+  mode: side-by-side
+
+  # Directory for 3rd-party plugin developers to load test builds from during dev (--run).
+  # Never included in the packaged bundle. Absolute path or ~/... recommended.
+  # dev_extensions_directory: "~/Library/Application Support/{{APP_NAME}}/DevPlugins"
+
+  # Allow loading plugin DLLs signed by developer teams other than the app signing identity.
+  # Required if 3rd-party developers distribute independently-signed plugin builds.
+  allow_external_signatures: false
+
+# ── Distribution Packaging ────────────────────────────────────────────────────
+# Settings for: python3 build.py --package
+package:
+  out_directory: "dist"
   category: public.app-category.utilities
-  # pluginMode: side-by-side    # side-by-side (default) or bundled
-  # dmg: false                  # create DMG alongside .app
-  # signingIdentity: "-"        # codesign identity (- = ad-hoc)
-  # requireSigningIdentity: false # fail packaging if signingIdentity is missing/adhoc
-  # notarize: false             # submit final artifact to Apple notarization
-  # notaryProfile: "my-profile" # xcrun notarytool keychain profile name
+  minimum_system_version: "15.0"
+
+  # Create a .dmg alongside the .app after packaging.
+  dmg: false
+
+  # Code signing. "-" = ad-hoc (local/dev only — Gatekeeper will reject for distribution).
+  signing_identity: "-"
+  require_signing_identity: false    # fail if signing_identity is ad-hoc
+  notarize: false                    # submit to Apple notarization after signing
+  # notary_profile: "my-profile"    # xcrun notarytool keychain profile name
+
+  # Additional files or directories to copy into the bundle Resources/ unchanged.
+  # extra_resources: []

@@ -194,14 +194,13 @@ def vendor_engine_bun(app_root: Path, engine: Path, bun_root: str = "bun"):
         shutil.copytree(engine_lib, dst_lib)
 
 
-def build_app_assembly(app_root: Path, engine: Path, debug=False):
+def build_app_assembly(app_root: Path, engine: Path):
     """Build the optional C# app assembly if app/ contains a .csproj."""
     app_dir = app_root / "app"
     if not app_dir.exists() or not any(app_dir.glob("*.csproj")):
         return
 
-    config = "Debug" if debug else "Release"
-    print(f"\n=== Building App Assembly ({config}) ===")
+    print(f"\n=== Building App Assembly ===")
     csproj = next(app_dir.glob("*.csproj"))
 
     # Write nuget.config pointing at engine's local nuget packages
@@ -216,7 +215,7 @@ def build_app_assembly(app_root: Path, engine: Path, debug=False):
 </configuration>
 """)
 
-    run(["dotnet", "build", str(csproj), "-c", config])
+    run(["dotnet", "build", str(csproj), "-c", "Release"])
 
 
 def setup_bun(app_root: Path, engine: Path, bun_root: str = "bun"):
@@ -230,15 +229,14 @@ def setup_bun(app_root: Path, engine: Path, bun_root: str = "bun"):
     vendor_engine_bun(app_root, engine, bun_root)
 
 
-def find_engine_binary(engine: Path, debug=False) -> Path:
+def find_engine_binary(engine: Path) -> Path:
     """Find the Keystone.App binary from the engine."""
     # Distributed layout
     simple = engine / "bin" / "Keystone.App"
     if simple.exists():
         return simple
     # Source checkout
-    config_mode = "Debug" if debug else "Release"
-    for mode in [config_mode, "Release", "Debug"]:
+    for mode in ["Release", "Debug"]:
         src = (engine / "Keystone.App" / "bin" / mode / "net10.0-macos" / "osx-arm64"
                / "Keystone.app" / "Contents" / "MacOS" / "Keystone.App")
         if src.exists():
@@ -246,7 +244,7 @@ def find_engine_binary(engine: Path, debug=False) -> Path:
     return None
 
 
-def clean(app_root: Path):
+def clean(app_root: Path, build_cfg: dict = {}):
     print("\n=== Cleaning ===")
     for csproj in app_root.rglob("*.csproj"):
         proj_dir = csproj.parent
@@ -255,34 +253,52 @@ def clean(app_root: Path):
             if d.exists():
                 shutil.rmtree(d)
                 print(f"  Removed {proj_dir.name}/{name}/")
-    dylib_dir = app_root / "dylib"
+    dylib_dir = app_root / build_cfg.get("dylib_directory", "dylib")
     if dylib_dir.exists():
         for f in dylib_dir.glob("*.dll"):
             f.unlink()
             print(f"  Removed {f.name}")
-    dist_dir = app_root / "dist"
+    pkg = build_cfg.get("package", {}) if isinstance(build_cfg.get("package"), dict) else {}
+    out_dir_name = pkg.get("out_directory", build_cfg.get("outDir", "dist"))
+    dist_dir = app_root / out_dir_name
     if dist_dir.exists():
         shutil.rmtree(dist_dir)
-        print(f"  Removed dist/")
+        print(f"  Removed {out_dir_name}/")
 
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
-def cmd_build(app_root: Path, build_cfg: dict, runtime_cfg: dict, debug=False):
+def resolve_bun_root(build_cfg: dict, runtime_cfg: dict) -> str:
+    """bun_directory in build yaml > bun.root in runtime config > 'bun'."""
+    if build_cfg.get("bun_directory"):
+        return build_cfg["bun_directory"]
+    bun = runtime_cfg.get("bun", {})
+    return bun.get("root", "bun") if isinstance(bun, dict) else "bun"
+
+
+def resolve_dylib_dir(build_cfg: dict, runtime_cfg: dict) -> str:
+    """dylib_directory in build yaml > plugins.dir in runtime config > 'dylib'."""
+    if build_cfg.get("dylib_directory"):
+        return build_cfg["dylib_directory"]
+    plugins = runtime_cfg.get("plugins", {})
+    return plugins.get("dir", "dylib") if isinstance(plugins, dict) else "dylib"
+
+
+def cmd_build(app_root: Path, build_cfg: dict, runtime_cfg: dict):
     """Build step: compile C# assembly + install bun deps + vendor engine."""
     engine = find_engine(build_cfg)
-    bun_root = runtime_cfg.get("bun", {}).get("root", "bun") if isinstance(runtime_cfg.get("bun"), dict) else "bun"
+    bun_root = resolve_bun_root(build_cfg, runtime_cfg)
 
-    build_app_assembly(app_root, engine, debug)
+    build_app_assembly(app_root, engine)
     setup_bun(app_root, engine, bun_root)
 
     return engine
 
 
-def cmd_run(app_root: Path, build_cfg: dict, runtime_cfg: dict, debug=False):
+def cmd_run(app_root: Path, build_cfg: dict, runtime_cfg: dict):
     """Build and run in dev mode."""
-    engine = cmd_build(app_root, build_cfg, runtime_cfg, debug)
-    binary = find_engine_binary(engine, debug)
+    engine = cmd_build(app_root, build_cfg, runtime_cfg)
+    binary = find_engine_binary(engine)
     if binary is None:
         print(f"  ERROR: Engine binary not found. Build the engine first.")
         sys.exit(1)
@@ -291,21 +307,27 @@ def cmd_run(app_root: Path, build_cfg: dict, runtime_cfg: dict, debug=False):
     print(f"\n=== Running {name} ===")
     env = os.environ.copy()
     env["KEYSTONE_ROOT"] = str(app_root)
+
+    # Surface dev_extensions_directory to the runtime so it can load 3rd-party plugin dev builds
+    plugins_build = build_cfg.get("plugins", {})
+    if isinstance(plugins_build, dict) and plugins_build.get("dev_extensions_directory"):
+        ext_dir = Path(plugins_build["dev_extensions_directory"]).expanduser().resolve()
+        env["KEYSTONE_DEV_EXTENSIONS"] = str(ext_dir)
+
     subprocess.run([str(binary)], cwd=app_root, env=env)
 
 
 def cmd_package(app_root: Path, build_cfg: dict, runtime_cfg: dict,
-                debug=False, mode=None, dmg=False, allow_external=False):
+                mode=None, dmg=False, allow_external=False):
     """Build and package into distributable .app bundle."""
-    engine = cmd_build(app_root, build_cfg, runtime_cfg, debug)
+    engine = cmd_build(app_root, build_cfg, runtime_cfg)
     packager = engine / "tools" / "package.py"
     if not packager.exists():
         print(f"  ERROR: Packager not found at {packager}")
         sys.exit(1)
 
+    # CLI flags override; build yaml is read directly by package.py
     cmd = [sys.executable, str(packager), str(app_root), "--engine", str(engine)]
-    if debug:
-        cmd.append("--debug")
     if mode:
         cmd += ["--mode", mode]
     if allow_external:
@@ -315,8 +337,8 @@ def cmd_package(app_root: Path, build_cfg: dict, runtime_cfg: dict,
     run(cmd)
 
 
-def cmd_clean(app_root: Path):
-    clean(app_root)
+def cmd_clean(app_root: Path, build_cfg: dict = {}):
+    clean(app_root, build_cfg)
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
@@ -326,12 +348,11 @@ def main():
     parser.add_argument("app_root", type=str, help="Path to the app directory")
     parser.add_argument("command", choices=["build", "run", "package", "clean"],
                         help="Command to run")
-    parser.add_argument("--debug", action="store_true", help="Debug mode")
     parser.add_argument("--mode", choices=["side-by-side", "bundled"],
-                        help="Plugin packaging mode")
+                        help="Override plugins.mode for packaging")
     parser.add_argument("--dmg", action="store_true", help="Create DMG")
     parser.add_argument("--allow-external", action="store_true",
-                        help="Allow externally-signed plugins")
+                        help="Override plugins.allow_external_signatures")
 
     args = parser.parse_args()
     app_root = Path(args.app_root).resolve()
@@ -344,14 +365,14 @@ def main():
     runtime_cfg = load_runtime_config(app_root)
 
     if args.command == "clean":
-        cmd_clean(app_root)
+        cmd_clean(app_root, build_cfg)
     elif args.command == "build":
-        cmd_build(app_root, build_cfg, runtime_cfg, debug=args.debug)
+        cmd_build(app_root, build_cfg, runtime_cfg)
     elif args.command == "run":
-        cmd_run(app_root, build_cfg, runtime_cfg, debug=args.debug)
+        cmd_run(app_root, build_cfg, runtime_cfg)
     elif args.command == "package":
         cmd_package(app_root, build_cfg, runtime_cfg,
-                    debug=args.debug, mode=args.mode, dmg=args.dmg,
+                    mode=args.mode, dmg=args.dmg,
                     allow_external=args.allow_external)
 
 
