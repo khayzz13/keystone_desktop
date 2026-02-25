@@ -6,6 +6,7 @@ App packaging is handled by tools/package.py.
 """
 
 import subprocess
+import sys
 import os
 import shutil
 import argparse
@@ -18,9 +19,20 @@ APP_NAME = "Keystone"
 DYLIB_DIR = ROOT / "dylib"
 NATIVE_DIR = DYLIB_DIR / "native"
 
+# Platform detection
+if sys.platform == "darwin":
+    FRAMEWORK = "net10.0-macos"
+    RUNTIME = "osx-arm64"
+elif sys.platform == "win32":
+    FRAMEWORK = "net10.0-windows"
+    RUNTIME = "win-x64"
+else:
+    FRAMEWORK = "net10.0"
+    RUNTIME = "linux-x64"
+
 def app_out_path(debug=False):
     config = "Debug" if debug else "Release"
-    return ROOT / "Keystone.App" / "bin" / config / "net10.0-macos" / "osx-arm64"
+    return ROOT / "Keystone.App" / "bin" / config / FRAMEWORK / RUNTIME
 
 APP_OUT = app_out_path()
 APP_BUNDLE = APP_OUT / f"{APP_NAME}.app"
@@ -83,9 +95,15 @@ def build_core(debug=False):
         ("Keystone.Core.Runtime", "Keystone.Core.Runtime/Keystone.Core.Runtime.csproj"),
         ("Keystone.Toolkit", "Keystone.Toolkit/Keystone.Toolkit.csproj"),
     ]
+    # Platform-specific graphics backends
+    if sys.platform == "win32":
+        projects.append(("Keystone.Core.Graphics.Skia.D3D", "Keystone.Core.Graphics.Skia.D3D/Keystone.Core.Graphics.Skia.D3D.csproj"))
+    elif sys.platform == "linux":
+        projects.append(("Keystone.Core.Graphics.Skia.Vulkan", "Keystone.Core.Graphics.Skia.Vulkan/Keystone.Core.Graphics.Skia.Vulkan.csproj"))
+
     for name, proj in projects:
         print(f"\nBuilding {name}...")
-        run(["dotnet", "build", str(ROOT / proj), "-c", config])
+        run(["dotnet", "build", str(ROOT / proj), "-c", config, "-f", FRAMEWORK])
 
 def build_app(debug=False):
     config = "Debug" if debug else "Release"
@@ -96,7 +114,8 @@ def build_app(debug=False):
     run([
         "dotnet", "publish", str(app_proj),
         "-c", config,
-        "-r", "osx-arm64",
+        "-f", FRAMEWORK,
+        "-r", RUNTIME,
         "--self-contained", "true"
     ])
 

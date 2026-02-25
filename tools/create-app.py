@@ -12,6 +12,7 @@ With native C# assembly (for custom plugins, services, or logic):
 """
 
 import argparse
+import os
 import re
 import shutil
 from pathlib import Path
@@ -160,12 +161,21 @@ def main():
     app_id = args.id or slug_to_id(slug)
     target_dir = (Path(args.dir) / slug).resolve()
 
+    # Compute relative path from the new app's app/ directory to the engine root.
+    # Used for csproj ProjectReferences and tsconfig paths.
+    app_csharp_dir = target_dir / "app"
+    engine_rel = os.path.relpath(ENGINE_ROOT, app_csharp_dir).replace("\\", "/")
+    bun_dir = target_dir / "bun"
+    engine_rel_bun = os.path.relpath(ENGINE_ROOT, bun_dir).replace("\\", "/")
+
     replacements = {
         "{{APP_NAME}}": name,
         "{{APP_ID}}": app_id,
         "{{APP_NAMESPACE}}": namespace,
         "{{APP_SLUG}}": slug,
         "{{KEYSTONE_VERSION}}": KEYSTONE_VERSION,
+        "{{ENGINE_REL}}": engine_rel,
+        "{{ENGINE_REL_BUN}}": engine_rel_bun,
     }
 
     mode = "web + native C#" if args.native else "web-only"

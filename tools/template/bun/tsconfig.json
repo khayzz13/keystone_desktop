@@ -1,8 +1,8 @@
 {
-  "extends": "{{ENGINE_REL}}/bun/tsconfig.base.json",
+  "extends": "{{ENGINE_REL_BUN}}/bun/tsconfig.base.json",
   "compilerOptions": {
     "paths": {
-      "@keystone/sdk/*": ["{{ENGINE_REL}}/bun/sdk/*"]
+      "@keystone/sdk/*": ["{{ENGINE_REL_BUN}}/bun/sdk/*"]
     }
   },
   "include": ["**/*.ts"]

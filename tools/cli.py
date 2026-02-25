@@ -203,17 +203,16 @@ def build_app_assembly(app_root: Path, engine: Path):
     print(f"\n=== Building App Assembly ===")
     csproj = next(app_dir.glob("*.csproj"))
 
-    # Write nuget.config pointing at engine's local nuget packages
-    nuget_dir = engine / "nuget"
-    if nuget_dir.exists():
-        (app_dir / "nuget.config").write_text(f"""<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources>
-    <add key="keystone-desktop" value="{nuget_dir}" />
-    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-  </packageSources>
-</configuration>
-""")
+    # Resolve {{ENGINE_REL}} placeholder in csproj if still present.
+    # Computes the relative path from the csproj directory to the engine root.
+    content = csproj.read_text()
+    if "{{ENGINE_REL}}" in content:
+        rel = os.path.relpath(engine.resolve(), csproj.parent.resolve())
+        # Normalize to forward slashes for MSBuild compatibility
+        rel = rel.replace("\\", "/")
+        content = content.replace("{{ENGINE_REL}}", rel)
+        csproj.write_text(content)
+        print(f"  Resolved {{{{ENGINE_REL}}}} → {rel}")
 
     run(["dotnet", "build", str(csproj), "-c", "Release"])
 
