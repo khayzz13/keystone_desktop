@@ -67,12 +67,6 @@ public class ActionRouter
             if (parts.Length == 2 && int.TryParse(parts[1], out var slotIndex))
                 _windowManager.PopoutFromBind(parts[0], slotIndex);
         }
-        else if (action == "open_layouts")
-        {
-            _windowManager.ShowWorkspacePanel = !_windowManager.ShowWorkspacePanel;
-            if (!_windowManager.ShowWorkspacePanel)
-                _windowManager.CloseOverlay();
-        }
         else if (action == "drag_start")
             _windowManager.StartDrag(sourceWindowId);
         else if (action == "close_bind")

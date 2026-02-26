@@ -99,6 +99,7 @@ public class ApplicationRuntime : ICoreContext
         _windowManager = new WindowManager(platform);
         _windowManager.OnSpawnWindow = SpawnWindow;
         _windowManager.OnSpawnWindowAt = SpawnWindowAt;
+        _windowManager.OnQuitApp = () => _cancellation.Cancel();
 #if MACOS
         _displayLink = new DisplayLink();
 #else
@@ -608,6 +609,7 @@ public class ApplicationRuntime : ICoreContext
         _windowManager.Dispose();
         _displayLink.Dispose();
         Console.WriteLine("[ApplicationRuntime] Shutdown complete");
+        _platform.Quit();
     }
 
     /// <summary>Schedule an action to run on the main thread (next loop iteration).</summary>
@@ -643,14 +645,27 @@ public class ApplicationRuntime : ICoreContext
 
         var (defaultW, defaultH) = plugin.DefaultSize;
 
-        // Center window on main screen
         var (sx, sy, sw, sh) = _platform.GetMainScreenFrame();
-        var x = sx + (sw - defaultW) / 2;
-        var y = sy + (sh - defaultH) / 2;
+        float x, y, w, h;
+
+        if (winCfg?.Docked == "top")
+        {
+            x = sx;
+            y = sy;
+            w = sw;
+            h = defaultH;
+        }
+        else
+        {
+            w = defaultW;
+            h = defaultH;
+            x = sx + (sw - w) / 2;
+            y = sy + (sh - h) / 2;
+        }
 
         var headless = winCfg?.Headless ?? false;
         var renderless = headless || (winCfg?.Renderless ?? false);
-        var config = new Platform.WindowConfig(x, y, defaultW, defaultH, floating, titleBarStyle, renderless, headless);
+        var config = new Platform.WindowConfig(x, y, w, h, floating, titleBarStyle, renderless, headless);
         var nativeWindow = _platform.CreateWindow(config);
 
         var managedWindow = CreateWindow(plugin);

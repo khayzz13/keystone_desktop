@@ -394,6 +394,13 @@ public class WindowConfig
     /// </summary>
     [JsonPropertyName("headless")]
     public bool Headless { get; set; } = false;
+
+    /// <summary>
+    /// Dock the window to a screen edge. "top" positions at (0, menuBarHeight) with full screen width.
+    /// null (default) = normal centered window.
+    /// </summary>
+    [JsonPropertyName("docked")]
+    public string? Docked { get; set; }
 }
 
 public class ToolbarConfig

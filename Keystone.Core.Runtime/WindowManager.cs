@@ -46,8 +46,6 @@ public class WindowManager : IDisposable
     public Func<string, (INativeWindow nativeWindow, ManagedWindow managed)?>? OnSpawnWindowAt;
     public bool BindModeActive => _bindModeActive;
 
-    // Workspace/layout state
-    public bool ShowWorkspacePanel;
     public string? ActiveWorkspaceId => KeystoneDb.GetActiveWorkspaceId();
 
     // Overlay window (floating dropdown/panel)
@@ -481,7 +479,6 @@ public class WindowManager : IDisposable
             w.NativeWindow.Close();
         UnregisterWindow(_activeOverlayId);
         _activeOverlayId = null;
-        ShowWorkspacePanel = false;
     }
 
     public bool HasActiveOverlay => _activeOverlayId != null;
@@ -707,7 +704,8 @@ public class WindowManager : IDisposable
 
     public void BringAllWindowsToFront() => _platform.BringAllWindowsToFront();
 
-    public void QuitApp() => _platform.Quit();
+    public Action? OnQuitApp { get; set; }
+    public void QuitApp() => OnQuitApp?.Invoke(); // wired by ApplicationRuntime
 
     public IEnumerable<(string id, string title)> GetWindowsForDockMenu()
     {

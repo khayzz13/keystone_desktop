@@ -260,29 +260,29 @@ public override HitTestResult? HitTest(float x, float y, float w, float h)
 Window plugins invoke logic plugins via `LogicRegistry` typed dispatch. The app defines delegate types matching its render signatures, then dispatches through the framework — zero reflection, zero boxing on the hot path.
 
 ```csharp
-// App-side delegate (e.g. TradingCore/LogicDelegates.cs)
-public delegate void ChartRenderDelegate(
+// App-side delegate
+public delegate void CanvasRenderDelegate(
     RenderContext ctx, float x, float y, float w, float h,
-    string windowId, ChartViewState state);
+    string windowId, ViewState state);
 ```
 
 **Single named plugin:**
 ```csharp
-LogicRegistry.Dispatch<ChartRenderDelegate>("sessions", "Render",
-    del => del(ctx, x, y, w, h, windowId, chartState));
+LogicRegistry.Dispatch<CanvasRenderDelegate>("grid", "Render",
+    del => del(ctx, x, y, w, h, windowId, viewState));
 ```
 
 **All plugins in compositor order** (sorted by `ILogicPlugin.RenderOrder`):
 ```csharp
-LogicRegistry.DispatchAll<ChartRenderDelegate>("Render",
-    del => del(ctx, x, y, w, h, windowId, chartState));
+LogicRegistry.DispatchAll<CanvasRenderDelegate>("Render",
+    del => del(ctx, x, y, w, h, windowId, viewState));
 ```
 
 **Subset by RenderOrder range** (background, content, overlays, HUD):
 ```csharp
 // Only background layer plugins (RenderOrder -100 to 0)
-LogicRegistry.DispatchRange<ChartRenderDelegate>("Render", -100, 0,
-    del => del(ctx, x, y, w, h, windowId, chartState));
+LogicRegistry.DispatchRange<CanvasRenderDelegate>("Render", -100, 0,
+    del => del(ctx, x, y, w, h, windowId, viewState));
 ```
 
 The delegate is created once via reflection on first call, then cached. Subsequent frames hit `ConcurrentDictionary.TryGetValue` + invoke. Hot-reload invalidates per-plugin cache entries automatically.
@@ -315,7 +315,7 @@ public Action<ushort, KeyModifiers>? OnKeyDown =>
 `WindowPluginBase` provides `ShowOverlay` and `CloseOverlay` for floating overlay windows (dropdowns, panels, color pickers). Overlays implement `IOverlayContent` — a simpler interface than `IWindowPlugin`.
 
 ```csharp
-var dropdown = new SymbolDropdown(symbols);
+var dropdown = new MyDropdown(items);
 ShowOverlay?.Invoke(dropdown, anchorX, anchorY);
 // ...
 CloseOverlay?.Invoke();
@@ -359,19 +359,19 @@ This is distinct from `IStatefulPlugin` which preserves ephemeral in-memory stat
 Implement `IStatefulPlugin` on any plugin to preserve transient state during development reloads:
 
 ```csharp
-public class ChartWindow : WindowPluginBase, IStatefulPlugin
+public class EditorWindow : WindowPluginBase, IStatefulPlugin
 {
     private float _scrollOffset;
-    private float _priceScale = 1.0f;
-    private bool _freeCam;
+    private float _zoomLevel = 1.0f;
+    private bool _showGrid;
 
     public byte[] SerializeState()
     {
         using var ms = new MemoryStream();
         using var bw = new BinaryWriter(ms);
         bw.Write(_scrollOffset);
-        bw.Write(_priceScale);
-        bw.Write(_freeCam);
+        bw.Write(_zoomLevel);
+        bw.Write(_showGrid);
         return ms.ToArray();
     }
 
@@ -380,8 +380,8 @@ public class ChartWindow : WindowPluginBase, IStatefulPlugin
         using var ms = new MemoryStream(state);
         using var br = new BinaryReader(ms);
         _scrollOffset = br.ReadSingle();
-        _priceScale = br.ReadSingle();
-        _freeCam = br.ReadBoolean();
+        _zoomLevel = br.ReadSingle();
+        _showGrid = br.ReadBoolean();
     }
 }
 ```
@@ -498,7 +498,7 @@ See [HTTP Router](./http-router.md) for the full reference.
 
 ```csharp
 // Push data to all subscribers on a channel
-context.Bun.Push("data:prices", new { btc = 65000.0, eth = 3200.0 });
+context.Bun.Push("data:updated", new { items = 42, status = "ready" });
 
 // Query a Bun service
 var result = await context.Bun.Query("file-scanner", new { dir = "/tmp" });
