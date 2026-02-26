@@ -37,7 +37,7 @@ All colors and sizes are static fields on `Theme`. Override them at startup to r
 Theme.BgSurface = 0x1e1e23ff;
 Theme.Accent = 0x4a6fa5ff;
 Theme.TextPrimary = 0xccccccff;
-Theme.TitleBarHeight = 44f;
+Theme.TitleBarHeight = 52f;
 ```
 
 Call `Theme.Reset()` to restore defaults. The default palette is a dark theme with blue accent.
@@ -51,7 +51,7 @@ Call `Theme.Reset()` to restore defaults. The default palette is a dark theme wi
 
 ### Standard sizes
 
-`TitleBarHeight` (44), `BindTitleBarHeight` (48), `StripHeight` (40), `PadX` (10), `GapX` (8), `CornerRadius` (4), `BtnSize` (24).
+`TitleBarHeight` (52), `BindTitleBarHeight` (48), `StripHeight` (40), `PadX` (10), `GapX` (8), `CornerRadius` (4), `BtnSize` (24).
 
 ---
 
@@ -168,7 +168,7 @@ Buttons.DragRegion(buttons, x, y, w, h);
 
 ## TitleBar
 
-Standard window title bar. Handles close, minimize, float toggle, tab groups, bind mode, and drag regions. Works in both modes:
+Standard window title bar. Handles close, minimize, float toggle, tab groups, bind mode, and drag regions. When `state.HasNativeControls` is true (titled windows with traffic lights / GTK decorations), close and minimize buttons are omitted and a spacer clears the native control area. Works in both modes:
 
 ```csharp
 // Scene graph — returns FlexNode

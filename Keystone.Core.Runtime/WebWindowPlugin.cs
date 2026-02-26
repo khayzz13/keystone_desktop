@@ -1,5 +1,6 @@
 // WebWindowPlugin — built-in window plugin for config-declared web windows.
-// titleBarStyle "toolkit": GPU title bar (close/minimize/float/tabs) + optional toolbar + web content.
+// titleBarStyle "toolkit": borderless, GPU title bar (close/minimize/float/tabs) + optional toolbar + web content.
+// titleBarStyle "toolkit-native": titled window with native controls + GPU title bar (tabs/float only) + web content.
 // titleBarStyle "hidden" (default): web content fills full window; native traffic lights from macOS.
 // titleBarStyle "none": web content fills full window; no native chrome at all.
 // Created automatically from keystone.json windows[] entries.
@@ -39,7 +40,7 @@ public class WebWindowPlugin : WindowPluginBase
         float contentY = 0;
 
         // GPU title bar only for "toolkit" mode (opt-in)
-        if (_cfg.TitleBarStyle == "toolkit")
+        if (_cfg.TitleBarStyle is "toolkit" or "toolkit-native")
         {
             var titleBar = TitleBar.Build(state, w);
             children.Add(new FlexGroupNode

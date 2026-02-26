@@ -32,7 +32,7 @@ Lives at the root of your app directory. The host searches `keystone.config.json
       "width": 1024,
       "height": 700,
       "spawn": true,          // open this window on launch
-      "titleBarStyle": "hidden",  // "hidden" (default), "toolkit", or "none"
+      "titleBarStyle": "hidden",  // "hidden" | "toolkit" | "toolkit-native" | "none"
       "floating": false,      // always-on-top (default: false)
       "renderless": false     // skip GPU/Skia entirely for web-only windows (default: false)
     }
@@ -111,7 +111,7 @@ The host validates config at startup and fails fast on invalid input. Errors inc
 | Scripts | `scripts.dir` required when `scripts.enabled = true` |
 | Bun | `bun.root` required when `bun.enabled = true` |
 | Process recovery | `bunMaxRestarts >= 0`; `bunRestartBaseDelayMs >= 0`; `bunRestartMaxDelayMs >= bunRestartBaseDelayMs`; `webViewReloadDelayMs >= 0` |
-| Windows | each `windows[i].component` required; `width > 0`; `height > 0`; `titleBarStyle` must be `hidden`, `toolkit`, or `none` |
+| Windows | each `windows[i].component` required; `width > 0`; `height > 0`; `titleBarStyle` must be `hidden`, `toolkit`, `toolkit-native`, or `none` |
 | Toolbar items | if present, each item must define at least one of: `label`, `action`, `icon`, `type` |
 | Workers | each worker needs non-empty `name` and `servicesDir`; worker names must be unique (case-insensitive); `maxRestarts >= 0`; `baseBackoffMs >= 0`; if `isExtensionHost = true`, `allowedChannels` cannot be an empty list |
 
@@ -138,7 +138,7 @@ Each entry in `windows` declares a component type the runtime knows about. The `
 | `width` | number | 800 | Initial width in points |
 | `height` | number | 600 | Initial height in points |
 | `spawn` | bool | true | Open on launch |
-| `titleBarStyle` | string | `"hidden"` | `"hidden"` = native traffic lights + full-bleed web; `"toolkit"` = GPU title bar with tabs/float; `"none"` = frameless |
+| `titleBarStyle` | string | `"hidden"` | `"hidden"` = native controls + full-bleed web; `"toolkit"` = borderless + GPU title bar; `"toolkit-native"` = native controls + GPU title bar; `"none"` = frameless |
 | `floating` | bool | false | Always-on-top |
 | `renderless` | bool | false | Skip GPU context and render thread entirely. Use for web-only windows. |
 
@@ -166,10 +166,10 @@ Trade-offs:
 | GPU surface | Metal/Vulkan/D3D12 swap chain per window | None |
 | Memory per window | +30–60 MB (GPU context + buffers) | Baseline only |
 | Native rendering | ✓ Skia canvas available | ✗ GPU rendering unavailable |
-| `titleBarStyle: "toolkit"` | ✓ | ✗ (requires GPU render thread) |
+| GPU title bar (`toolkit`/`toolkit-native`) | ✓ | Window style still applies but GPU title bar won't render |
 | Web content | ✓ | ✓ |
 
-`renderless` is incompatible with `titleBarStyle: "toolkit"`. Setting both is a config validation error.
+All `titleBarStyle` values are valid with `renderless: true`. The window chrome style (titled/borderless, native controls) still applies — the GPU title bar components simply won't render without a GPU surface.
 
 Windows with `spawn: false` can be opened programmatically:
 ```typescript

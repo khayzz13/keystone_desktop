@@ -1,20 +1,20 @@
 # keystone-desktop
 
-> **Early development / experimental.** macOS, Linux, and Windows supported.
+> **Early development / experimental. Not intended for production use.** macOS supported, Linux/Windows scaffolding exists.
 
 A software foundation and framework enabaling you to build with HTML/TS/CSS and/or C#. Three processes — a C# host, a Bun runtime, and a WebKit renderer — form a triangle with full communication across every path.
 
 Build your frontend in web tech (React, Svelte, vanilla JS), your backend services in TypeScript, and your main process in C# with direct access to the native platform — Metal on macOS, Vulkan on Linux, D3D12 on Windows. Or skip any layer you don't need.
 
-https://discord.gg/d2GVrZJda7 - OFFICIAL DISCORD
+https://discord.gg/d2GVrZJda7 - Discord
 ---
 
 ## The architecture
 
-Keystone runs as three independent OS processes:
+Your app runs as three independent or more OS processes:
 
 ```
-           Browser (WebKit)
+              Browser (WebKit)
           ╱                     ╲
      invoke()              invokeBun()
      fetch("/api/…")       query() / send()

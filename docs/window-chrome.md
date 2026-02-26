@@ -72,6 +72,36 @@ This is a non-native look — similar to how Electron apps style their own chrom
 
 ---
 
+## Toolkit + Native Controls (`"toolkit-native"`)
+
+Combines native window controls with the GPU title bar. The window is titled (traffic lights on macOS, GTK decorations on Linux, rounded corners) but also gets the GPU-rendered tab strip and float toggle.
+
+```jsonc
+// keystone.json
+{
+  "windows": [
+    {
+      "component": "app",
+      "width": 1200,
+      "height": 800,
+      "titleBarStyle": "toolkit-native"
+    }
+  ]
+}
+```
+
+With `"toolkit-native"`:
+- Native window controls (traffic lights on macOS, GTK header buttons on Linux)
+- Compositor-level rounded corners
+- GPU-rendered title bar with tab strip, float toggle — **no** GPU close/minimize buttons (native controls handle that)
+- Tab strip is offset to the right to clear the native control area
+- Web content starts below the title bar
+- Supports tab groups, bind/tiling, and the toolkit toolbar system
+
+Best of both worlds — native platform feel with GPU-rendered tabs and tiling features.
+
+---
+
 ## Frameless (`"none"`)
 
 To go completely frameless — no title bar, no traffic lights, no rounded corners — use `titleBarStyle: "none"`. The window is a plain rectangle. You own the entire surface.
@@ -227,7 +257,8 @@ This is the escape hatch for anything not covered by `titleBarStyle` — custom 
 |------|---------|
 | Standard platform look (native window controls, rounded corners) | Default (no config needed) |
 | Web controls everything, native controls present | Default (`"hidden"`) |
-| GPU title bar with tabs/tiling | `"titleBarStyle": "toolkit"` |
+| GPU title bar with tabs/tiling (borderless) | `"titleBarStyle": "toolkit"` |
+| Native controls + GPU title bar with tabs/tiling | `"titleBarStyle": "toolkit-native"` |
 | Completely frameless | `"titleBarStyle": "none"` |
 | Always-on-top | `"floating": true` |
 | Per-window native window control | C# app layer via `IWindowPlugin` or `OnBeforeRun` hook |

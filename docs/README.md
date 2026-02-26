@@ -20,6 +20,7 @@ Native desktop application framework for macOS and Linux. GPU/Skia rendering, Bu
 
 ## Reference
 
+- **[Programmatic Bootstrap](./programmatic-bootstrap.md)** — `KeystoneApp` fluent builder API for creating apps entirely from C#
 - **[Native API Reference](./native-api.md)** — all built-in `invoke` channels, `action` strings, bridge API
 - **[Configuration Reference](./configuration.md)** — `keystone.json` and `bun/keystone.config.ts` full schema
 - **[Window Chrome](./window-chrome.md)** — controlling the native window surface: full-bleed web, native window controls, or GPU-rendered chrome

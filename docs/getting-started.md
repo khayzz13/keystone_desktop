@@ -47,7 +47,7 @@ None of the optional layers are required together — you can have web-only (no 
 
 ## The App Manifest
 
-`keystone.json` is read by the runtime before anything else starts.
+`keystone.json` is read by the runtime before anything else starts. For fully programmatic bootstrap without a config file, see [Programmatic Bootstrap (`KeystoneApp`)](./programmatic-bootstrap.md).
 
 ```json
 {

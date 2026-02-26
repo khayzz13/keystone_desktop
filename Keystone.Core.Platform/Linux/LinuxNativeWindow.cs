@@ -37,11 +37,12 @@ public class LinuxNativeWindow : INativeWindow
         _window = Gtk.ApplicationWindowNew(app);
         Gtk.WindowSetDefaultSize(_window, (int)config.Width, (int)config.Height);
 
-        // Title bar style
-        if (config.TitleBarStyle == "hidden")
+        // Title bar style — "hidden" uses transparent titlebar (CSD), "toolkit"/"none" are undecorated
+        if (config.TitleBarStyle is "hidden" or "toolkit" or "none")
         {
             Gtk.WindowSetDecorated(_window, false);
         }
+        // "toolkit-native" keeps GTK decorations (native window controls + GPU title bar)
 
         if (config.Floating || isOverlay)
         {

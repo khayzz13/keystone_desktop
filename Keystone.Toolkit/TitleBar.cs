@@ -42,27 +42,35 @@ public static class TitleBar
             return row;
         }
 
-        // Left buttons: close, minimize
-        if (showClose)
+        // Native controls (traffic lights) — add spacer to clear them, skip GPU buttons
+        if (state.HasNativeControls)
         {
-            row.Child(new FlexNode
-            {
-                Width = btnSize, Height = btnSize, BgRadius = cornerR,
-                BgColor = Theme.BgMedium, HoverBgColor = Theme.Danger,
-                Icon = FlexIcon.Close, IconColor = Theme.TextSecondary,
-                Action = "close_window"
-            });
+            row.Child(new FlexNode { Width = 58 });
         }
-
-        if (showMinimize)
+        else
         {
-            row.Child(new FlexNode
+            // GPU buttons: close, minimize
+            if (showClose)
             {
-                Width = btnSize, Height = btnSize, BgRadius = cornerR,
-                BgColor = 0x333340ff, HoverBgColor = Theme.BgLight,
-                Icon = FlexIcon.Minimize, IconColor = Theme.TextPrimary,
-                Action = "minimize"
-            });
+                row.Child(new FlexNode
+                {
+                    Width = btnSize, Height = btnSize, BgRadius = cornerR,
+                    BgColor = Theme.BgMedium, HoverBgColor = Theme.Danger,
+                    Icon = FlexIcon.Close, IconColor = Theme.TextSecondary,
+                    Action = "close_window"
+                });
+            }
+
+            if (showMinimize)
+            {
+                row.Child(new FlexNode
+                {
+                    Width = btnSize, Height = btnSize, BgRadius = cornerR,
+                    BgColor = 0x333340ff, HoverBgColor = Theme.BgLight,
+                    Icon = FlexIcon.Minimize, IconColor = Theme.TextPrimary,
+                    Action = "minimize"
+                });
+            }
         }
 
         // Tab area

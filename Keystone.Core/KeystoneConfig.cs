@@ -163,11 +163,8 @@ public class KeystoneConfig
             if (window.Height <= 0)
                 ThrowInvalid(path, $"'{prefix}.height' must be > 0");
 
-            if (!new[] { "hidden", "toolkit", "none" }.Contains(window.TitleBarStyle, StringComparer.OrdinalIgnoreCase))
-                ThrowInvalid(path, $"'{prefix}.titleBarStyle' must be one of: hidden, toolkit, none");
-
-            if (window.Renderless && string.Equals(window.TitleBarStyle, "toolkit", StringComparison.OrdinalIgnoreCase))
-                ThrowInvalid(path, $"'{prefix}.renderless' cannot be used with titleBarStyle \"toolkit\" — toolkit requires GPU rendering");
+            if (!new[] { "hidden", "toolkit", "toolkit-native", "none" }.Contains(window.TitleBarStyle, StringComparer.OrdinalIgnoreCase))
+                ThrowInvalid(path, $"'{prefix}.titleBarStyle' must be one of: hidden, toolkit, toolkit-native, none");
 
             // headless implies renderless; silently enforce it
             if (window.Headless)
@@ -364,7 +361,8 @@ public class WindowConfig
 
     /// <summary>
     /// "hidden" (default) — Native traffic lights, transparent titlebar, web fills full window.
-    /// "toolkit" — GPU-rendered title bar with close/minimize/float/tabs. Opt-in for tiling WM apps.
+    /// "toolkit" — Borderless. GPU-rendered title bar with close/minimize/float/tabs.
+    /// "toolkit-native" — Native traffic lights + rounded corners. GPU title bar with tabs/float (no close/min buttons).
     /// "none" — Completely frameless. No traffic lights, no title bar.
     /// </summary>
     [JsonPropertyName("titleBarStyle")]

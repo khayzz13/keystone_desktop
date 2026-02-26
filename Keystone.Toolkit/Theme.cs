@@ -56,7 +56,7 @@ public static class Theme
     //  Standard sizes
     // ═══════════════════════════════════════════════════════════
 
-    public static float TitleBarHeight = 44f;
+    public static float TitleBarHeight = 52f;
     public static float BindTitleBarHeight = 48f;
     public static float StripHeight  = 40f;
     public static float PadX         = 10f;
@@ -79,7 +79,7 @@ public static class Theme
         Success = 0x26a69aff; Warning = 0xffca28ff; Danger = 0xef5350ff;
         WarningBg = 0x351818ff; WarningStroke = 0x553030ff;
         TextPrimary = 0xccccccff; TextSecondary = 0x888888ff; TextMuted = 0x667788ff; TextSubtle = 0xffffffaa;
-        TitleBarHeight = 44f; BindTitleBarHeight = 48f; StripHeight = 40f;
+        TitleBarHeight = 52f; BindTitleBarHeight = 48f; StripHeight = 40f;
         PadX = 10f; GapX = 8f; CornerRadius = 4f; BtnSize = 24f;
     }
 }

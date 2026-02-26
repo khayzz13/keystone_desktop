@@ -185,6 +185,9 @@ public class ManagedWindow : IDisposable
     // Always-on-top state
     public bool AlwaysOnTop { get; set; } = false;
 
+    // Native window controls present (traffic lights on macOS, GTK decorations on Linux)
+    public bool HasNativeControls { get; set; }
+
     // Overlay anchor position
     public float OverlayAnchorX { get; set; }
 
@@ -430,6 +433,7 @@ public class ManagedWindow : IDisposable
         _frameState.BindModeActive = GetBindModeActive?.Invoke() ?? false;
         _frameState.IsSelectedForBind = GetIsSelectedForBind?.Invoke(Id) ?? false;
         _frameState.AlwaysOnTop = AlwaysOnTop;
+        _frameState.HasNativeControls = HasNativeControls;
 
         _frameState.IsInTabGroup = LayoutMode == WindowLayoutMode.TabGroup;
         _frameState.TabGroupId = GroupId;

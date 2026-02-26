@@ -70,7 +70,7 @@ public class MacOSPlatform : IPlatform
 
     public INativeWindow CreateWindow(WindowConfig config)
     {
-        var nsWindow = config.TitleBarStyle == "hidden"
+        var nsWindow = config.TitleBarStyle is "hidden" or "toolkit-native"
             ? CreateTitledTransparentWindow(config.X, config.Y, config.Width, config.Height)
             : CreateBorderlessWindow(config.X, config.Y, config.Width, config.Height);
 

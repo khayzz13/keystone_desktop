@@ -670,6 +670,7 @@ public class ApplicationRuntime : ICoreContext
 
         var managedWindow = CreateWindow(plugin);
         managedWindow.AlwaysOnTop = floating;
+        managedWindow.HasNativeControls = titleBarStyle is "hidden" or "toolkit-native";
         RegisterWindow(managedWindow, nativeWindow);
 
         // Headless windows are never shown — they run their WebView silently.

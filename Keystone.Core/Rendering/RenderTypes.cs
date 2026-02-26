@@ -103,6 +103,9 @@ public class FrameState
     // Per-window GPU context (set by render thread, used by compute shaders)
     public IGpuContext? GpuContext { get; set; }
 
+    // Native window controls present (traffic lights on macOS, GTK decorations on Linux)
+    public bool HasNativeControls { get; set; }
+
     // Set by BuildScene plugins to request another frame (animations, toolbar slide)
     public bool NeedsRedraw { get; set; }
 

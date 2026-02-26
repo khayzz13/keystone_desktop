@@ -28,6 +28,7 @@ WebKit Content Process (per window, OS-managed)
 my-app/
 ├── keystone.json              # C# host config: windows, plugins, recovery
 ├── bun/
+│   ├── host.ts                # Bun lifecycle hooks (optional — onReady, onShutdown, etc.)
 │   ├── keystone.config.ts     # Bun config: services, HMR, security
 │   ├── web/
 │   │   └── app.ts             # Web component (export mount, unmount)
@@ -60,7 +61,7 @@ my-app/
       "title": "My App",
       "width": 1200, "height": 800,
       "spawn": true,             // open on launch (default: true)
-      "titleBarStyle": "hidden", // "hidden" | "toolkit" | "none"
+      "titleBarStyle": "hidden", // "hidden" | "toolkit" | "toolkit-native" | "none"
       "floating": false,         // always-on-top
       "renderless": false,       // skip GPU surface — use for web-only windows (saves 30–60MB RAM)
       "headless": false          // invisible WebKit window, never shown (implies renderless)
@@ -85,8 +86,8 @@ my-app/
 }
 ```
 
-**`titleBarStyle`:** `"hidden"` = native traffic lights, web content full-bleed. `"toolkit"` = GPU tab bar + float button (requires non-renderless). `"none"` = fully frameless.
-**`renderless: true`** — no Metal/Vulkan surface. Incompatible with `titleBarStyle: "toolkit"`.
+**`titleBarStyle`:** `"hidden"` = native traffic lights, web content full-bleed. `"toolkit"` = borderless, GPU title bar with close/min/float/tabs. `"toolkit-native"` = native traffic lights + GPU title bar with tabs/float (no close/min buttons). `"none"` = fully frameless.
+**`renderless: true`** — no Metal/Vulkan surface. All title bar styles are valid; GPU title bar components won't render without a GPU surface.
 **`headless: true`** — invisible window, never shown. Forces `renderless: true`. For background JS, PDF capture, test harnesses.
 
 ### `bun/keystone.config.ts`
@@ -110,6 +111,61 @@ export default defineConfig({
   },
 });
 ```
+
+---
+
+## Dev Setup & Build System
+
+`@keystone/sdk` and `keystone-desktop` are **not npm packages** — they are vendored from the engine by the build tooling.
+
+### How `@keystone/sdk` gets into `node_modules`
+
+`tools/cli.py`'s `vendor_engine_bun()` runs as part of every `build` or `run` step:
+
+```
+engine/bun/sdk/           →  app/bun/node_modules/@keystone/sdk/
+engine/bun/               →  app/bun/node_modules/keystone-desktop/
+engine/bun/lib/           →  app/bun/node_modules/@keystone/lib/
+```
+
+This is a **file copy** (`shutil.copytree`), not a symlink or runtime hook. Bun then resolves `@keystone/sdk/*` from `node_modules` normally.
+
+**`keystone.build.yaml`** controls engine location — no auto-download, vendor only:
+```yaml
+app_directory: "."               # path to app root (relative to build.py)
+framework_directory: "../keystone"  # path to engine source or distribution
+```
+`build.py` reads these keys, resolves the engine path, and delegates to `engine/tools/cli.py`.
+
+**To set up a dev environment:**
+```bash
+python3 build.py        # vendors SDK, installs bun deps, compiles C# if present
+python3 build.py --run  # same + launches the app
+```
+Re-run `build.py` after engine changes to re-vendor the SDK.
+
+### tsconfig.json — IDE paths
+
+`bun/tsconfig.json` extends `{{ENGINE_REL}}/bun/tsconfig.base.json` and declares `@keystone/sdk/*` paths pointing into the engine source. `{{ENGINE_REL}}` is a scaffolding placeholder — replace it with the actual relative path to the engine for IDE type-checking. Example:
+
+```json
+{
+  "extends": "../../keystone/bun/tsconfig.base.json",
+  "compilerOptions": {
+    "paths": { "@keystone/sdk/*": ["../../keystone/bun/sdk/*"] }
+  }
+}
+```
+
+The actual Bun build always uses the vendored `node_modules` copy regardless of what tsconfig says.
+
+### Package / distribution
+
+`tools/package.py` builds a self-contained `.app`:
+- Pre-bundles all web components via `Bun.build()` into JS/CSS — no `.ts` source ships
+- Compiles `host.ts` + services into a single-file Bun executable
+- Embeds `keystone.resolved.json` (pre-resolved bun config, no `.ts` evaluation at runtime)
+- `bun install` + vendoring do **not** run at launch — everything is pre-built
 
 ---
 
@@ -241,6 +297,49 @@ const unsub = subscribe("notes:updated", (notes) => setState(notes));
 var json = await context.Bun.Query("notes", new { });
 BunManager.Instance.SendAction("notes:refresh");
 ```
+
+---
+
+## Paradigm 2.5 — Bun Host (`bun/host.ts`)
+
+Lifecycle extension point for the Bun process — the Electron `main.js` equivalent. Scaffolded automatically; all hooks optional.
+
+```typescript
+import { defineHost } from "@keystone/sdk/host";
+
+export default defineHost({
+  async onBeforeStart(ctx) {
+    // Before service discovery — register services other services will call(), global handlers
+    await ctx.registerService("db", myDbModule);
+    ctx.registerInvokeHandler("app:getConfig", async () => loadConfig());
+  },
+  async onReady(ctx) {
+    // After all services started + HTTP server live — windows opening in C#
+    ctx.push("app:status", { ready: true });
+  },
+  async onShutdown(ctx) {
+    // Before service stop() calls
+    await flushPendingWrites();
+  },
+  onAction(action, ctx) {
+    // Every action from C# or web, alongside per-service onAction handlers (sync only)
+    if (action === "app:refresh") ctx.push("app:refresh", {});
+  },
+});
+```
+
+**HostContext** (passed to every hook):
+```typescript
+ctx.registerService(name, mod)           // register ServiceModule inline, calls start(ctx) immediately
+ctx.registerInvokeHandler(channel, fn)   // global invokeBun() target not tied to a service
+ctx.onWebMessage(type, fn)               // global send() target
+ctx.push(channel, data)                  // broadcast to C# + web
+ctx.services                             // ReadonlyMap of all registered services
+ctx.config                               // resolved KeystoneRuntimeConfig
+```
+
+- `bun/host.ts` changes require process restart (not hot-reloaded)
+- File is optional — absent = identical behavior to before
 
 ---
 
@@ -909,13 +1008,82 @@ Omit the `bun` block from `keystone.json`. No Bun process starts. Implement `IWi
 
 ---
 
+## Programmatic Bootstrap (`KeystoneApp`)
+
+`KeystoneApp` is a fluent builder API for creating Keystone applications entirely from C# — no `keystone.json` required.
+
+```csharp
+KeystoneApp.Create("My App", "com.example.myapp")
+    .Window("app", w => w.Title("My App").Size(1200, 800))
+    .WithBun()
+    .Run();
+```
+
+### Builder API
+
+| Method | Effect |
+|--------|--------|
+| `KeystoneApp.Create(name, id)` | Static factory, returns builder |
+| `.Window(component, configure?)` | Register a web window — configure callback exposes `WindowBuilder` |
+| `.Window<T>()` | Register a native `IWindowPlugin` by type |
+| `.Window(plugin)` | Register a native `IWindowPlugin` instance |
+| `.Service<T>()` | Register an `IServicePlugin` by type |
+| `.WithBun(root?)` | Enable Bun subprocess (default root: `"bun"`) |
+| `.WithPlugins(dir?)` | Enable hot-reloadable plugin loading (default dir: `"dylib"`) |
+| `.RootDir(path)` | Override root directory resolution |
+| `.Run()` | Build, initialize, run. Blocks until shutdown. |
+
+### WindowBuilder
+
+| Method | Effect |
+|--------|--------|
+| `.Title(string)` | Window title |
+| `.Size(float w, float h)` | Initial size in points |
+| `.NoSpawn()` | Don't open on launch — register as a spawnable type |
+| `.Toolbar(configure)` | Add a toolbar strip below the title bar |
+
+### Mixed web + native example
+
+```csharp
+KeystoneApp.Create("Trading Platform", "com.example.trading")
+    .Window("dashboard", w => w.Title("Dashboard").Size(1400, 900))
+    .Window("settings", w => w.Title("Settings").Size(600, 400).NoSpawn())
+    .Window<ChartWindow>()
+    .Window<OrderBookWindow>()
+    .Service<MarketDataService>()
+    .WithBun()
+    .WithPlugins()
+    .Run();
+```
+
+`KeystoneApp` and `keystone.json` are not mutually exclusive — if a `keystone.json` exists, the runtime reads it regardless.
+
+---
+
+## Window Chrome (`titleBarStyle`)
+
+Four window chrome modes control the combination of native controls and GPU-rendered title bar:
+
+| `titleBarStyle` | Window type | Native controls | GPU title bar |
+|---|---|---|---|
+| `"hidden"` (default) | Titled | Traffic lights / GTK decorations | No |
+| `"toolkit"` | Borderless | No | Yes — close, minimize, float, tabs |
+| `"toolkit-native"` | Titled | Traffic lights / GTK decorations | Yes — tabs, float only (no close/min) |
+| `"none"` | Borderless | No | No |
+
+Any style can combine with `renderless: true`. GPU title bar components won't render without a GPU surface, but window style and native controls still apply.
+
+**`"toolkit-native"` is for windows that want both native window management (traffic lights, rounded corners, OS window snapping) and the GPU title bar (tabs, float toggle).** The title bar is 52px tall, with a 58px left spacer to clear macOS traffic lights. Close and minimize are handled by the native controls — the GPU bar only renders tabs and the float toggle.
+
+---
+
 ## Common Mistakes
 
 - **`action()` vs `invoke()`** — `action()` is fire-and-forget, hits all `onAction` handlers globally. `invoke()` is request/reply to a specific named handler. Don't use action when you need a return value.
 - **Thread safety in invoke handlers** — handlers run on thread pool. Any AppKit/GTK platform UI APIs require `RunOnMainThread`.
 - **`invokeBun` vs `invoke`** — `invoke` → C# directly (fast, no Bun hop). `invokeBun` → Bun `.handle()` (over WebSocket). Use `invoke` for native OS APIs, `invokeBun` for business logic.
 - **`subscribe` replays last value** — new subscribers immediately get the last cached value. If your channel carries ephemeral events (not state snapshots), this can cause stale fires.
-- **`renderless: true`** cannot use `titleBarStyle: "toolkit"` — toolkit requires a GPU render thread.
+- **`renderless: true`** is valid with all `titleBarStyle` values — the window chrome style applies but GPU title bar components won't render without a GPU surface.
 - **`ICorePlugin` via `appAssembly` is NOT hot-reloaded** — only plugins discovered from `dylib/` hot-reload. Don't put your ICorePlugin in `dylib/` without `appAssembly` pointing to it.
 - **`IWindowPlugin` and `IServicePlugin` in `dylib/` DO hot-reload** — implement `IStatefulPlugin` or `IReloadableService` to preserve in-memory state across reloads.
 - **`globalShortcut` on Linux** — always returns false. Wayland GlobalShortcuts portal not implemented.
