@@ -201,7 +201,7 @@ public class MyService : IReloadableService
 
 ## `ILogicPlugin` — Render and Compute Plugins
 
-Logic plugins are attached to windows and invoked during the render cycle. Window plugins call the logic plugin's render methods from their own render path. They're the right tool for GPU compute, custom render passes, or anything that processes per-frame data.
+Logic plugins are attached to windows and invoked during the render cycle. Window plugins call logic plugin render methods through `LogicRegistry` typed dispatch — the framework provides the dispatch infrastructure, the app defines the delegate signatures and controls when dispatch happens. They're the right tool for GPU compute, custom render passes, or anything that processes per-frame data.
 
 ```csharp
 public interface ILogicPlugin
@@ -226,6 +226,40 @@ public interface ILogicPlugin
 **`RequiresGpu`** signals that this plugin will use GPU compute or GPU buffers. When set, `RenderContext.Gpu` provides `IGpuContext` — cast to `WindowGpuContext` (macOS) or `VulkanGpuContext` (Linux) for the concrete GPU device and command queue.
 
 **`Dependencies`** — data source keys this plugin consumes. Apps define their own dependency key convention.
+
+### Dispatch from Window Plugins
+
+Logic plugins expose static `Render` methods with app-specific signatures. The app defines matching delegate types, and window plugins invoke them through `LogicRegistry` typed dispatch. First call creates the delegate via reflection; subsequent frames are zero-reflection, zero-boxing — just `ConcurrentDictionary.TryGetValue` + invoke.
+
+```csharp
+// App defines delegate type matching its logic plugin Render signatures
+public delegate void MyRenderDelegate(RenderContext ctx, float x, float y, float w, float h, string windowId);
+```
+
+**`Dispatch<T>`** — invoke a single named logic plugin:
+```csharp
+LogicRegistry.Dispatch<MyRenderDelegate>("lines", "Render",
+    del => del(ctx, x, y, w, h, windowId));
+```
+
+**`DispatchAll<T>`** — invoke all logic plugins with a matching method, sorted by `RenderOrder`:
+```csharp
+LogicRegistry.DispatchAll<MyRenderDelegate>("Render",
+    del => del(ctx, x, y, w, h, windowId));
+```
+
+**`DispatchRange<T>`** — invoke logic plugins within a `RenderOrder` range `[min, max]` for compositing layers:
+```csharp
+// Background layers only
+LogicRegistry.DispatchRange<MyRenderDelegate>("Render", -100, 0,
+    del => del(ctx, x, y, w, h, windowId));
+
+// Overlay layers only
+LogicRegistry.DispatchRange<MyRenderDelegate>("Render", 100, 200,
+    del => del(ctx, x, y, w, h, windowId));
+```
+
+Hot-reload invalidates per-plugin delegate cache entries automatically — when a logic plugin DLL changes, only that plugin's cached delegates are evicted. All other plugins continue dispatching without a cache miss.
 
 ### GPU Compute Access
 
@@ -269,6 +303,7 @@ public class LineRenderer : ILogicPlugin
 
     public void Initialize() { }
 
+    // Static render method — dispatched by window plugins via LogicRegistry
     public static void Render(RenderContext ctx, string windowId, float x, float y, float w, float h)
     {
         if (ctx.Gpu is not WindowGpuContext gpu) return;
@@ -297,6 +332,15 @@ kernel void downsample(...) { /* ... */ }
 
     public void Dispose() { OutputBuffer?.Dispose(); }
 }
+```
+
+Window plugin dispatching the above:
+```csharp
+public delegate void LineRenderDelegate(RenderContext ctx, string windowId, float x, float y, float w, float h);
+
+// In window plugin's render path:
+LogicRegistry.Dispatch<LineRenderDelegate>("lines", "Render",
+    del => del(ctx, windowId, x, y, w, h));
 ```
 
 ---

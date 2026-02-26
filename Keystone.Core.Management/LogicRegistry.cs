@@ -17,6 +17,7 @@ public static class LogicRegistry
     private static readonly ConcurrentDictionary<(string, string), MethodInfo?> _methodCache = new();
     private static readonly ConcurrentDictionary<(string, string), Delegate?> _delegateCache = new();
     private static readonly object _lock = new();
+    private static IReadOnlyList<string>? _cachedRenderOrder;
 
     public static void Register(string name, Type type, ILogicPlugin? instance = null)
     {
@@ -28,6 +29,7 @@ public static class LogicRegistry
                 _methodCache.TryRemove(key, out _);
             foreach (var key in _delegateCache.Keys.Where(k => k.Item1 == name).ToList())
                 _delegateCache.TryRemove(key, out _);
+            _cachedRenderOrder = null;
         }
         Console.WriteLine($"[LogicRegistry] Registered: {name}");
     }
@@ -44,6 +46,7 @@ public static class LogicRegistry
                 _methodCache.TryRemove(key, out _);
             foreach (var key in _delegateCache.Keys.Where(k => k.Item1 == name).ToList())
                 _delegateCache.TryRemove(key, out _);
+            _cachedRenderOrder = null;
         }
     }
 
@@ -78,12 +81,16 @@ public static class LogicRegistry
     /// <summary>Get all registered logic names sorted by RenderOrder.</summary>
     public static IReadOnlyList<string> GetRenderOrder()
     {
+        var cached = _cachedRenderOrder;
+        if (cached != null) return cached;
         lock (_lock)
         {
-            return _logicTypes.Keys
+            cached = _logicTypes.Keys
                 .Where(n => _delegateCache.ContainsKey((n, "Render")) || HasStaticMethod(n, "Render"))
                 .OrderBy(n => _instances.TryGetValue(n, out var p) ? p.RenderOrder : 0)
                 .ToList();
+            _cachedRenderOrder = cached;
+            return cached;
         }
     }
 
@@ -113,6 +120,42 @@ public static class LogicRegistry
             var del = Delegate.CreateDelegate(typeof(T), method, throwOnBindFailure: false);
             _delegateCache[key] = del;
             return del as T;
+        }
+    }
+
+    // === Typed dispatch — window-controlled, framework-provided ===
+
+    /// <summary>Invoke a single named logic plugin via cached delegate. Returns false if not found.</summary>
+    public static bool Dispatch<T>(string logicName, string methodName, Action<T> invoker) where T : Delegate
+    {
+        var del = GetOrCreateDelegate<T>(logicName, methodName);
+        if (del == null) return false;
+        invoker(del);
+        return true;
+    }
+
+    /// <summary>Invoke all registered logic plugins with a matching method, sorted by RenderOrder.</summary>
+    public static void DispatchAll<T>(string methodName, Action<T> invoker) where T : Delegate
+    {
+        foreach (var name in GetRenderOrder())
+        {
+            var del = GetOrCreateDelegate<T>(name, methodName);
+            if (del != null) invoker(del);
+        }
+    }
+
+    /// <summary>Invoke logic plugins within a RenderOrder range [minOrder, maxOrder].</summary>
+    public static void DispatchRange<T>(string methodName, int minOrder, int maxOrder, Action<T> invoker) where T : Delegate
+    {
+        lock (_lock)
+        {
+            foreach (var name in _logicTypes.Keys)
+            {
+                var order = _instances.TryGetValue(name, out var p) ? p.RenderOrder : 0;
+                if (order < minOrder || order > maxOrder) continue;
+                var del = GetOrCreateDelegate<T>(name, methodName);
+                if (del != null) invoker(del);
+            }
         }
     }
 

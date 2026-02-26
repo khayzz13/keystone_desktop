@@ -255,6 +255,43 @@ public override HitTestResult? HitTest(float x, float y, float w, float h)
 }
 ```
 
+### Logic Plugin Dispatch
+
+Window plugins invoke logic plugins via `LogicRegistry` typed dispatch. The app defines delegate types matching its render signatures, then dispatches through the framework — zero reflection, zero boxing on the hot path.
+
+```csharp
+// App-side delegate (e.g. TradingCore/LogicDelegates.cs)
+public delegate void ChartRenderDelegate(
+    RenderContext ctx, float x, float y, float w, float h,
+    string windowId, ChartViewState state);
+```
+
+**Single named plugin:**
+```csharp
+LogicRegistry.Dispatch<ChartRenderDelegate>("sessions", "Render",
+    del => del(ctx, x, y, w, h, windowId, chartState));
+```
+
+**All plugins in compositor order** (sorted by `ILogicPlugin.RenderOrder`):
+```csharp
+LogicRegistry.DispatchAll<ChartRenderDelegate>("Render",
+    del => del(ctx, x, y, w, h, windowId, chartState));
+```
+
+**Subset by RenderOrder range** (background, content, overlays, HUD):
+```csharp
+// Only background layer plugins (RenderOrder -100 to 0)
+LogicRegistry.DispatchRange<ChartRenderDelegate>("Render", -100, 0,
+    del => del(ctx, x, y, w, h, windowId, chartState));
+```
+
+The delegate is created once via reflection on first call, then cached. Subsequent frames hit `ConcurrentDictionary.TryGetValue` + invoke. Hot-reload invalidates per-plugin cache entries automatically.
+
+For logic plugins that don't need typed dispatch (initialization, one-off queries), the reflection fallback still works:
+```csharp
+LogicRegistry.Invoke("pluginName", "MethodName", arg1, arg2);
+```
+
 ### Scroll and Keyboard Input
 
 Window plugins can receive scroll and keyboard events directly:
