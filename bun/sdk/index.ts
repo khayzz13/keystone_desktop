@@ -16,3 +16,6 @@ export type { ComponentDefinition, MountFn } from "./component";
 
 export { defineConfig } from "./config";
 export type { KeystoneRuntimeConfig } from "./config";
+
+export { defineHost } from "./host";
+export type { AppHostModule, HostContext, HostHook } from "./host";

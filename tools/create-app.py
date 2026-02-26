@@ -109,6 +109,7 @@ def print_next_steps(target_dir: Path, name: str, native: bool):
     build.py               build shim (calls engine tools)
     app/                   C# assembly (ICorePlugin + custom plugins)
     bun/
+      host.ts              Bun lifecycle hooks (onReady, onShutdown, etc.)
       keystone.config.ts   bun runtime config
       package.json         app dependencies
       web/app.ts           main window component (edit this first)
@@ -127,6 +128,7 @@ def print_next_steps(target_dir: Path, name: str, native: bool):
     keystone.build.yaml    build config (engine version, packaging)
     build.py               build shim (calls engine tools)
     bun/
+      host.ts              Bun lifecycle hooks (onReady, onShutdown, etc.)
       keystone.config.ts   bun runtime config
       package.json         app dependencies
       web/app.ts           main window  <- start here

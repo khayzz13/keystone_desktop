@@ -12,7 +12,7 @@ process.title = process.env.KEYSTONE_APP_NAME ?? process.env.KEYSTONE_APP_ID ?? 
 import { readdirSync, existsSync, statSync, watch, realpathSync } from "fs";
 import { join } from "path";
 import type { ServerWebSocket } from "bun";
-import type { Request, ServiceContext, WorkerConnection } from "./types";
+import type { Request, ServiceContext, WorkerConnection, AppHostModule, HostContext } from "./types";
 import { resolveConfig, type ResolvedConfig } from "./sdk/config";
 
 // Engine runtime root (host.ts, types.ts, lib/)
@@ -420,6 +420,10 @@ if (watchEnabled) {
       console.error("[host] host.ts changed — restart process to apply");
       return;
     }
+    if (abs === join(APP_ROOT, "host.ts")) {
+      console.error("[host] app host.ts changed — restart process to apply");
+      return;
+    }
 
     if (isSharedFile(abs)) {
       reloadAll();
@@ -759,6 +763,7 @@ async function handleWebMessage(ws: ServerWebSocket, type: string, data: any) {
       return;
     }
     for (const [, handler] of actionHandlers) handler(data.action);
+    appHost?.onAction?.(data.action, makeHostContext());
     console.log(JSON.stringify({ type: "action_from_web", action: data.action }));
     return;
   }
@@ -799,9 +804,51 @@ async function handleWebMessage(ws: ServerWebSocket, type: string, data: any) {
   console.error(`[host] unhandled web message type: ${type}`);
 }
 
+// === App host module ===
+
+async function loadAppHost(): Promise<AppHostModule | null> {
+  const hostPath = join(APP_ROOT, "host.ts");
+  if (!existsSync(hostPath)) return null;
+  try {
+    const mod = require(hostPath);
+    return (mod.default ?? mod) as AppHostModule;
+  } catch (e: any) {
+    console.error(`[host] failed to load app host.ts: ${e.message}`);
+    return null;
+  }
+}
+
+function makeHostContext(): HostContext {
+  return {
+    async registerService(name, mod) {
+      if (mod.start) await mod.start(ctx);
+      services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
+    },
+    registerInvokeHandler(channel, handler) {
+      invokeHandlers.set(channel, handler);
+    },
+    onWebMessage(type, handler) {
+      webMessageHandlers.set(type, handler);
+    },
+    push(channel, data) {
+      const msg = JSON.stringify({ type: channel, data });
+      serverRef.publish(channel, msg);
+      console.log(JSON.stringify({ type: "service_push", channel, data }));
+    },
+    get services() { return services as ReadonlyMap<string, any>; },
+    get config() { return config; },
+  };
+}
+
 // === Boot ===
 
+const appHost = await loadAppHost();
 registerBuiltins();
+
+if (appHost?.onBeforeStart) {
+  await appHost.onBeforeStart(makeHostContext());
+}
+
 await discoverServices();
 
 function emitReady() {
@@ -814,6 +861,10 @@ function emitReady() {
 }
 
 emitReady();
+
+if (appHost?.onReady) {
+  await appHost.onReady(makeHostContext());
+}
 
 // === Health monitor (conditional) ===
 
@@ -853,6 +904,7 @@ if (config.health.enabled) {
         const req = JSON.parse(line) as Request;
 
         if (req.type === "shutdown") {
+          if (appHost?.onShutdown) await appHost.onShutdown(makeHostContext());
           for (const [, svc] of services) svc.stop?.();
           process.exit(0);
         }
@@ -888,6 +940,7 @@ if (config.health.enabled) {
 
         else if (req.type === "action") {
           for (const [, handler] of actionHandlers) handler(req.action);
+          appHost?.onAction?.(req.action, makeHostContext());
           serverRef.publish("all", JSON.stringify({ type: "action", action: req.action }));
         }
 

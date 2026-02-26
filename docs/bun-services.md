@@ -363,6 +363,116 @@ const security = await query("security");
 
 ---
 
+## App Host (`bun/host.ts`)
+
+`bun/host.ts` is an optional entry point that gives you lifecycle hooks into the Bun process itself. It's the Electron equivalent of `main.js` — the place for setup that doesn't belong in a service module: direct service registration, global invoke handlers, process-wide initialization, and shutdown cleanup.
+
+The file is scaffolded automatically when you create an app. All hooks are commented out by default — uncomment only what you need.
+
+```typescript
+// bun/host.ts
+import { defineHost } from "@keystone/sdk/host";
+
+export default defineHost({
+  async onBeforeStart(ctx) {
+    // Fires before service discovery.
+    // Register services that other services will call(), or global invoke handlers.
+    await ctx.registerService("db", myDbModule);
+    ctx.registerInvokeHandler("app:getConfig", async () => loadConfig());
+  },
+
+  async onReady(ctx) {
+    // Fires after all services are started and the HTTP server is live.
+    // Windows are opening on the C# side at this point.
+    ctx.push("app:status", { ready: true });
+  },
+
+  async onShutdown(ctx) {
+    // Fires before service stop() calls. Last chance to flush state.
+    await flushPendingWrites();
+  },
+
+  onAction(action, ctx) {
+    // Global action handler — receives every action from C# or web.
+    // Runs alongside per-service onAction handlers.
+    if (action === "app:refresh") ctx.push("app:refresh", {});
+  },
+});
+```
+
+### Lifecycle Phases
+
+| Hook | When | Use for |
+|------|------|---------|
+| `onBeforeStart` | Before service discovery | Direct service registration, global handler setup |
+| `onReady` | After all services started, HTTP server live | Initial pushes, process-wide background tasks |
+| `onShutdown` | Before service `stop()` calls | Flushing writes, external connection teardown |
+| `onAction` | Every action from C# or web | Global action routing not tied to one service |
+
+### `HostContext`
+
+Every hook receives a `HostContext`:
+
+```typescript
+type HostContext = {
+  // Register a service module directly — bypasses file discovery. Calls start(ctx) immediately.
+  registerService: (name: string, mod: ServiceModule) => Promise<void>;
+  // Register a named invoke handler not tied to a service.
+  registerInvokeHandler: (channel: string, handler: (args: any) => any) => void;
+  // Register a web→Bun message handler (browser send() target).
+  onWebMessage: (type: string, handler: (data: any) => void) => void;
+  // Push data to C# host and connected web clients.
+  push: (channel: string, data: any) => void;
+  // Live view of all registered services.
+  readonly services: ReadonlyMap<string, ServiceModule>;
+  // The resolved runtime config.
+  readonly config: ResolvedConfig;
+};
+```
+
+### Registering services directly
+
+`ctx.registerService` lets you register a service module inline rather than dropping a file in `bun/services/`. The module's `start(ctx)` is called immediately. This is useful for services with complex initialization that you want to coordinate with other setup:
+
+```typescript
+export default defineHost({
+  async onBeforeStart(ctx) {
+    const db = await openDatabase();
+
+    await ctx.registerService("db", {
+      name: "db",
+      async start() {},
+      query: (args) => db.query(args.sql),
+      stop: () => db.close(),
+    });
+  },
+});
+```
+
+Services registered in `onBeforeStart` are available to all discovered services that call `ctx.call("db", ...)` in their own `start()`.
+
+### Global invoke handlers
+
+Register handlers that aren't scoped to a specific service:
+
+```typescript
+export default defineHost({
+  onBeforeStart(ctx) {
+    ctx.registerInvokeHandler("app:getConfig", async () => {
+      return loadConfigFromDisk();
+    });
+  },
+});
+```
+
+Browser calls this via `invokeBun("app:getConfig")`.
+
+### Hot reload behavior
+
+`bun/host.ts` changes require a process restart — the file is not hot-reloaded. The runtime prints a message if it detects a change while running.
+
+---
+
 ## Next
 
 - [Workers](./workers.md) — run services in additional Bun processes for parallelism and extension isolation

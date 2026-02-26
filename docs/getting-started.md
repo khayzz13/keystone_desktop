@@ -28,6 +28,7 @@ my-app/
 ├── bun/                    # TypeScript layer (optional)
 │   ├── package.json
 │   ├── tsconfig.json
+│   ├── host.ts             # Bun lifecycle hooks (optional)
 │   ├── keystone.config.ts  # Bun runtime config
 │   ├── web/
 │   │   └── app.ts          # UI component

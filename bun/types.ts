@@ -2,6 +2,8 @@
 // Defines the NDJSON message shapes between C# host and Bun subprocess,
 // and the contracts for services and web components.
 
+import type { ResolvedConfig } from "./sdk/config";
+
 // === IPC Request (C# → Bun / C# → Worker) ===
 
 export type Request =
@@ -86,4 +88,36 @@ export type SlotContext = {
 export type WebComponentModule = {
   mount: (root: HTMLElement, ctx?: SlotContext) => void;
   unmount?: (root: HTMLElement) => void;
+};
+
+// === App host module (bun/host.ts) ===
+// Apps may export any combination of these named hooks from their bun/host.ts.
+// The framework imports it if it exists and calls hooks at defined lifecycle phases.
+
+export type HostContext = {
+  /** Register a service module directly — bypasses file discovery. Calls start(ctx) immediately. */
+  registerService: (name: string, mod: ServiceModule) => Promise<void>;
+  /** Register a named invoke handler not tied to a service. */
+  registerInvokeHandler: (channel: string, handler: (args: any) => any | Promise<any>) => void;
+  /** Register a web→Bun message handler (browser send() target). */
+  onWebMessage: (type: string, handler: (data: any) => void | Promise<void>) => void;
+  /** Push data to C# host and connected web clients. */
+  push: (channel: string, data: any) => void;
+  /** Live view of all registered services. */
+  readonly services: ReadonlyMap<string, ServiceModule>;
+  /** The resolved runtime config. */
+  readonly config: ResolvedConfig;
+};
+
+export type HostHook = (ctx: HostContext) => void | Promise<void>;
+
+export type AppHostModule = {
+  /** Before service discovery — good for direct service registration, global handler setup. */
+  onBeforeStart?: HostHook;
+  /** After all services started and HTTP server is live — windows are opening in C#. */
+  onReady?: HostHook;
+  /** Before service stop() calls — last chance to flush state. */
+  onShutdown?: HostHook;
+  /** Global action handler — fires alongside per-service onAction handlers. Sync only. */
+  onAction?: (action: string, ctx: HostContext) => void;
 };
