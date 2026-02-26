@@ -1,32 +1,24 @@
-// MacOSGlobalShortcut — global hotkey registration via Carbon RegisterEventHotKey.
-// This is the same mechanism Electron/Tauri use on macOS.
-// Requires no special entitlements (unlike CGEventTap which needs Accessibility).
+// MacOSGlobalShortcut — global hotkey registration via NSEvent.addGlobalMonitorForEvents.
+// No entitlements required (unlike CGEventTap which needs Accessibility).
+// Uses addLocalMonitorForEvents for when the app is focused, addGlobalMonitorForEvents for background.
 
 using System.Runtime.InteropServices;
 using Keystone.Core.Platform.Abstractions;
+using ObjCRuntime;
+using AppKit;
+using Foundation;
 
 namespace Keystone.Core.Platform.MacOS;
 
-[StructLayout(LayoutKind.Sequential)]
-internal struct EventHotKeyID { public uint signature; public uint id; }
-
-[StructLayout(LayoutKind.Sequential)]
-internal struct EventTypeSpec { public uint eventClass; public uint eventKind; }
-
-internal delegate int EventHandlerUPP(IntPtr nextHandler, IntPtr theEvent, IntPtr userData);
-
 public sealed class MacOSGlobalShortcut : IGlobalShortcutBackend
 {
-    private readonly Dictionary<string, (uint hotKeyId, IntPtr refHandle)> _registered = new();
-    private readonly Dictionary<uint, Action> _callbacks = new();
-    private uint _nextId = 1;
-    private IntPtr _handlerRef;
-    private EventHandlerUPP? _handlerUPP;
-    private bool _installed;
+    private readonly Dictionary<string, (NSEventModifierMask mods, ushort keyCode, Action callback)> _registered = new();
+    private NSObject? _globalMonitor;
+    private NSObject? _localMonitor;
 
     public MacOSGlobalShortcut()
     {
-        InstallEventHandler();
+        InstallMonitors();
     }
 
     public bool Register(string accelerator, Action onFired)
@@ -36,72 +28,63 @@ public sealed class MacOSGlobalShortcut : IGlobalShortcutBackend
             Console.WriteLine($"[MacOSGlobalShortcut] Cannot parse accelerator: {accelerator}");
             return false;
         }
-
-        var id = _nextId++;
-        var hotKeyId = new EventHotKeyID { signature = 0x4B535431 /* KST1 */, id = id };
-
-        var result = Carbon.RegisterEventHotKey(keyCode, modifiers, hotKeyId,
-            Carbon.GetApplicationEventTarget(), 0, out var refHandle);
-        if (result != 0)
-        {
-            Console.WriteLine($"[MacOSGlobalShortcut] RegisterEventHotKey failed: {result} for {accelerator}");
-            return false;
-        }
-
-        _registered[accelerator] = (id, refHandle);
-        _callbacks[id] = onFired;
+        _registered[accelerator] = (modifiers, keyCode, onFired);
         return true;
     }
 
     public void Unregister(string accelerator)
     {
-        if (!_registered.TryGetValue(accelerator, out var entry)) return;
-        Carbon.UnregisterEventHotKey(entry.refHandle);
-        _callbacks.Remove(entry.hotKeyId);
         _registered.Remove(accelerator);
     }
 
     public void Dispose()
     {
-        foreach (var entry in _registered.Values)
-            Carbon.UnregisterEventHotKey(entry.refHandle);
-        _registered.Clear();
-        _callbacks.Clear();
-        if (_installed && _handlerRef != IntPtr.Zero)
-            Carbon.RemoveEventHandler(_handlerRef);
-    }
-
-    private void InstallEventHandler()
-    {
-        _handlerUPP = HandleHotKeyEvent;
-        var eventTypes = new[]
+        if (_globalMonitor != null)
         {
-            new EventTypeSpec { eventClass = Carbon.kEventClassKeyboard, eventKind = Carbon.kEventHotKeyPressed }
-        };
-        var result = Carbon.InstallApplicationEventHandler(
-            _handlerUPP, (uint)eventTypes.Length, eventTypes,
-            IntPtr.Zero, out _handlerRef);
-        _installed = result == 0;
-        if (!_installed)
-            Console.WriteLine($"[MacOSGlobalShortcut] InstallApplicationEventHandler failed: {result}");
-    }
-
-    private int HandleHotKeyEvent(IntPtr nextHandler, IntPtr theEvent, IntPtr userData)
-    {
-        var hotKeyId = new EventHotKeyID();
-        Carbon.GetEventParameter(theEvent, Carbon.kEventParamDirectObject,
-            Carbon.typeEventHotKeyID, IntPtr.Zero,
-            (uint)Marshal.SizeOf<EventHotKeyID>(), IntPtr.Zero, ref hotKeyId);
-        if (_callbacks.TryGetValue(hotKeyId.id, out var cb))
-        {
-            try { cb(); } catch { }
+            NSEvent.RemoveMonitor(_globalMonitor);
+            _globalMonitor = null;
         }
-        return 0; // noErr
+        if (_localMonitor != null)
+        {
+            NSEvent.RemoveMonitor(_localMonitor);
+            _localMonitor = null;
+        }
+        _registered.Clear();
+    }
+
+    private void InstallMonitors()
+    {
+        // Global: fires when app is NOT focused
+        _globalMonitor = NSEvent.AddGlobalMonitorForEventsMatchingMask(
+            NSEventMask.KeyDown, HandleKeyEvent);
+
+        // Local: fires when app IS focused
+        _localMonitor = NSEvent.AddLocalMonitorForEventsMatchingMask(
+            NSEventMask.KeyDown, e => { HandleKeyEvent(e); return e; });
+    }
+
+    private void HandleKeyEvent(NSEvent e)
+    {
+        var keyCode = e.KeyCode;
+        // Mask off device-dependent bits
+        var mods = e.ModifierFlags & (NSEventModifierMask.ShiftKeyMask
+            | NSEventModifierMask.ControlKeyMask
+            | NSEventModifierMask.AlternateKeyMask
+            | NSEventModifierMask.CommandKeyMask);
+
+        foreach (var entry in _registered.Values)
+        {
+            if (entry.keyCode == keyCode && entry.mods == mods)
+            {
+                try { entry.callback(); } catch { }
+                return;
+            }
+        }
     }
 
     // ── Accelerator parser ─────────────────────────────────────────────────
 
-    private static bool TryParseAccelerator(string accelerator, out uint keyCode, out uint modifiers)
+    private static bool TryParseAccelerator(string accelerator, out ushort keyCode, out NSEventModifierMask modifiers)
     {
         keyCode = 0; modifiers = 0;
         var parts = accelerator.Split('+');
@@ -113,12 +96,12 @@ public sealed class MacOSGlobalShortcut : IGlobalShortcutBackend
         {
             modifiers |= parts[i].Trim().ToUpperInvariant() switch
             {
-                "CONTROL" or "CTRL" => Carbon.controlKey,
-                "SHIFT" => Carbon.shiftKey,
-                "ALT" or "OPTION" => Carbon.optionKey,
-                "META" or "COMMAND" or "CMD" => Carbon.cmdKey,
-                "COMMANDORCONTROL" or "CTRLORCMD" => Carbon.cmdKey, // macOS = Cmd
-                _ => 0u
+                "CONTROL" or "CTRL" => NSEventModifierMask.ControlKeyMask,
+                "SHIFT" => NSEventModifierMask.ShiftKeyMask,
+                "ALT" or "OPTION" => NSEventModifierMask.AlternateKeyMask,
+                "META" or "COMMAND" or "CMD" => NSEventModifierMask.CommandKeyMask,
+                "COMMANDORCONTROL" or "CTRLORCMD" => NSEventModifierMask.CommandKeyMask,
+                _ => 0
             };
         }
 
@@ -141,52 +124,8 @@ public sealed class MacOSGlobalShortcut : IGlobalShortcutBackend
             "TAB" => 0x30,
             "DELETE" or "BACKSPACE" => 0x33,
             "LEFT" => 0x7B, "RIGHT" => 0x7C, "DOWN" => 0x7D, "UP" => 0x7E,
-            _ => uint.MaxValue
+            _ => ushort.MaxValue
         };
-        return keyCode != uint.MaxValue;
+        return keyCode != ushort.MaxValue;
     }
-}
-
-// ── Carbon P/Invoke ────────────────────────────────────────────────────────
-
-internal static class Carbon
-{
-    private const string Lib = "/System/Library/Frameworks/Carbon.framework/Carbon";
-
-    public const uint kEventClassKeyboard = 0x6B657962; // 'keyb'
-    public const uint kEventHotKeyPressed = 5;
-    public const uint kEventParamDirectObject = 0x2D2D2D2D; // '----'
-    public const uint typeEventHotKeyID = 0x686B6579; // 'hkey'
-
-    public const uint controlKey = 0x1000;
-    public const uint optionKey = 0x0800;
-    public const uint cmdKey = 0x0100;
-    public const uint shiftKey = 0x0200;
-
-    [DllImport(Lib)]
-    public static extern int RegisterEventHotKey(
-        uint inHotKeyCode, uint inHotKeyModifiers,
-        EventHotKeyID inHotKeyID, IntPtr inTarget,
-        uint inOptions, out IntPtr outRef);
-
-    [DllImport(Lib)]
-    public static extern int UnregisterEventHotKey(IntPtr inHotKey);
-
-    [DllImport(Lib)]
-    public static extern IntPtr GetApplicationEventTarget();
-
-    [DllImport(Lib)]
-    public static extern int InstallApplicationEventHandler(
-        EventHandlerUPP inHandler, uint inNumTypes,
-        [In] EventTypeSpec[] inList,
-        IntPtr inUserData, out IntPtr outRef);
-
-    [DllImport(Lib)]
-    public static extern int RemoveEventHandler(IntPtr inHandlerRef);
-
-    [DllImport(Lib)]
-    public static extern int GetEventParameter(
-        IntPtr inEvent, uint inName, uint inDesiredType,
-        IntPtr outActualType, uint inBufferSize,
-        IntPtr outActualSize, ref EventHotKeyID outData);
 }

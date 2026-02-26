@@ -890,7 +890,11 @@ public class ManagedWindow : IDisposable
             _w.RefreshMousePosition();
             _w.RequestRedraw();
         }
-        public void OnClosed() { }
+        public void OnClosed()
+        {
+            ApplicationRuntime.Instance?.RunOnMainThread(() =>
+                ApplicationRuntime.Instance?.WindowManager.UnregisterWindow(_w.Id));
+        }
         public void OnMoved(double x, double y) { }
     }
 }

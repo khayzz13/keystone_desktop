@@ -194,27 +194,58 @@ def vendor_engine_bun(app_root: Path, engine: Path, bun_root: str = "bun"):
         shutil.copytree(engine_lib, dst_lib)
 
 
-def build_app_assembly(app_root: Path, engine: Path):
-    """Build the optional C# app assembly if app/ contains a .csproj."""
-    app_dir = app_root / "app"
-    if not app_dir.exists() or not any(app_dir.glob("*.csproj")):
+def _resolve_engine_rel(csproj: Path, engine: Path):
+    """Replace {{ENGINE_REL}} placeholder in a csproj with the actual relative path."""
+    content = csproj.read_text()
+    if "{{ENGINE_REL}}" not in content:
+        return
+    rel = os.path.relpath(engine.resolve(), csproj.parent.resolve()).replace("\\", "/")
+    csproj.write_text(content.replace("{{ENGINE_REL}}", rel))
+    print(f"    Resolved {{{{ENGINE_REL}}}} → {rel}")
+
+
+def build_cs(app_root: Path, engine: Path, build_cfg: dict):
+    """Build C# projects in priority order from build_cs config.
+
+    build_cs entries are "priority:path" where path is a .csproj or directory.
+    Same priority builds sequentially. Directories build all contained .csproj files.
+    Falls back to legacy single-assembly build if build_cs is absent.
+    """
+    cs_cfg = build_cfg.get("build_cs")
+    if not cs_cfg or not isinstance(cs_cfg, dict):
         return
 
-    print(f"\n=== Building App Assembly ===")
-    csproj = next(app_dir.glob("*.csproj"))
+    # Parse "priority:path" and group by priority
+    groups = {}
+    for label, raw in cs_cfg.items():
+        raw = str(raw)
+        if ":" in raw and raw.split(":", 1)[0].strip().isdigit():
+            prio, path = raw.split(":", 1)
+            prio = int(prio.strip())
+            path = path.strip().strip('"').strip("'")
+        else:
+            prio, path = 0, raw.strip().strip('"').strip("'")
+        groups.setdefault(prio, []).append((label, path))
 
-    # Resolve {{ENGINE_REL}} placeholder in csproj if still present.
-    # Computes the relative path from the csproj directory to the engine root.
-    content = csproj.read_text()
-    if "{{ENGINE_REL}}" in content:
-        rel = os.path.relpath(engine.resolve(), csproj.parent.resolve())
-        # Normalize to forward slashes for MSBuild compatibility
-        rel = rel.replace("\\", "/")
-        content = content.replace("{{ENGINE_REL}}", rel)
-        csproj.write_text(content)
-        print(f"  Resolved {{{{ENGINE_REL}}}} → {rel}")
-
-    run(["dotnet", "build", str(csproj), "-c", "Release"])
+    for prio in sorted(groups):
+        print(f"\n=== Building C# [priority {prio}] ===")
+        for label, path in groups[prio]:
+            resolved = app_root / path
+            if resolved.suffix == ".csproj" and resolved.exists():
+                _resolve_engine_rel(resolved, engine)
+                print(f"  [{label}] {path}")
+                run(["dotnet", "build", str(resolved), "-c", "Release"])
+            elif resolved.is_dir():
+                csprojs = sorted(resolved.glob("**/*.csproj"))
+                if not csprojs:
+                    print(f"  [{label}] {path} — no .csproj found, skipping")
+                    continue
+                for csproj in csprojs:
+                    _resolve_engine_rel(csproj, engine)
+                    print(f"  [{label}] {csproj.relative_to(app_root)}")
+                    run(["dotnet", "build", str(csproj), "-c", "Release"])
+            else:
+                print(f"  [{label}] {path} — not found, skipping")
 
 
 def setup_bun(app_root: Path, engine: Path, bun_root: str = "bun"):
@@ -284,11 +315,11 @@ def resolve_dylib_dir(build_cfg: dict, runtime_cfg: dict) -> str:
 
 
 def cmd_build(app_root: Path, build_cfg: dict, runtime_cfg: dict):
-    """Build step: compile C# assembly + install bun deps + vendor engine."""
+    """Build step: compile C# projects + install bun deps + vendor engine."""
     engine = find_engine(build_cfg)
     bun_root = resolve_bun_root(build_cfg, runtime_cfg)
 
-    build_app_assembly(app_root, engine)
+    build_cs(app_root, engine, build_cfg)
     setup_bun(app_root, engine, bun_root)
 
     return engine

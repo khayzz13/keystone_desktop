@@ -178,6 +178,9 @@ public class MacOSNativeWindow : INativeWindow
             }
         }
 
+        [Export("windowWillClose:")]
+        public void WillClose(NSNotification notification) => _del.OnClosed();
+
         [Export("windowDidMove:")]
         public void DidMove(NSNotification notification)
         {

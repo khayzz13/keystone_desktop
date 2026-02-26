@@ -12,6 +12,13 @@ framework_directory: "../keystone"   # Keystone engine source or distribution
 bun_directory: "bun"
 dylib_directory: "dylib"             # C# plugin DLL output directory
 
+# ── C# Build Order ──────────────────────────────────────────────────────────
+# Format: "priority:path" — lower priority builds first.
+# Path can be a .csproj file or a directory (builds all .csproj in it).
+# build_cs:
+#   core: "1:app/App.Core.csproj"
+#   plugins: "2:plugins"
+
 # ── Plugins ───────────────────────────────────────────────────────────────────
 plugins:
   # How C# plugins are delivered in the packaged .app bundle:
