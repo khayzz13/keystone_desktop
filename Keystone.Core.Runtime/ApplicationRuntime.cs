@@ -229,8 +229,8 @@ public class ApplicationRuntime : ICoreContext
                 _pluginRegistry.RegisterWindow(new WebWindowPlugin(winCfg));
         }
 
-        // 9b. Merge plugin-declared network endpoints, then forward policy to Bun subprocess via env.
-        MergePluginNetworkDeclarations();
+        // 9b. Forward resolved network policy to Bun subprocess via env
+        //     Done after plugin loading so INetworkDeclarer endpoints are merged in.
         Environment.SetEnvironmentVariable("KEYSTONE_NETWORK_MODE", NetworkPolicy.Enforcing ? "allowlist" : "open");
         Environment.SetEnvironmentVariable("KEYSTONE_NETWORK_ENDPOINTS", NetworkPolicy.Serialize());
 
@@ -310,44 +310,6 @@ public class ApplicationRuntime : ICoreContext
                 Console.WriteLine($"[ApplicationRuntime] Initialized core plugin: {core.CoreName}");
             }
         }
-    }
-
-    /// <summary>
-    /// Merge all plugin-declared network endpoints into the resolved app policy.
-    /// Must run after all plugin sources are loaded and before Bun starts.
-    /// </summary>
-    private void MergePluginNetworkDeclarations()
-    {
-        if (!NetworkPolicy.Enforcing) return;
-
-        var declarers = _pluginRegistry.GetPluginsImplementing<INetworkDeclarer>();
-        if (declarers.Count == 0) return;
-
-        var mergedEndpoints = 0;
-        var unrestrictedDeclarers = 0;
-
-        foreach (var declarer in declarers)
-        {
-            if (declarer.NetworkUnrestricted)
-                unrestrictedDeclarers++;
-
-            var endpoints = declarer.NetworkEndpoints;
-            if (endpoints == null) continue;
-
-            foreach (var endpoint in endpoints)
-            {
-                if (string.IsNullOrWhiteSpace(endpoint)) continue;
-                NetworkPolicy.AddEndpoint(endpoint);
-                mergedEndpoints++;
-            }
-        }
-
-        Console.WriteLine(
-            $"[ApplicationRuntime] Network policy merged {mergedEndpoints} plugin endpoints from {declarers.Count} INetworkDeclarer plugin(s)");
-
-        if (unrestrictedDeclarers > 0)
-            Console.WriteLine(
-                $"[ApplicationRuntime] WARNING: {unrestrictedDeclarers} INetworkDeclarer plugin(s) requested NetworkUnrestricted, but runtime policy currently supports endpoint merging only");
     }
 
     /// <summary>
@@ -693,7 +655,7 @@ public class ApplicationRuntime : ICoreContext
         var (defaultW, defaultH) = plugin.DefaultSize;
 
         var (sx, sy, sw, sh) = _platform.GetMainScreenFrame();
-        float x, y, w, h;
+        double x, y, w, h;
 
         if (winCfg?.Docked == "top")
         {
@@ -879,7 +841,10 @@ public class ApplicationRuntime : ICoreContext
                                 .Where(e => !string.IsNullOrEmpty(e))
                                 .ToArray();
                             if (exts.Length > 0)
-                                panel.AllowedFileTypes = exts;
+                                panel.AllowedContentTypes = exts
+                                    .Select(e => UniformTypeIdentifiers.UTType.CreateFromExtension(e))
+                                    .Where(t => t != null)
+                                    .ToArray()!;
                         }
                     }
                     var response = (int)panel.RunModal();

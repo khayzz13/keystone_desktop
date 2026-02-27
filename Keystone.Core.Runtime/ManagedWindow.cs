@@ -210,7 +210,7 @@ public class ManagedWindow : IDisposable
     // Global state callbacks
     public Func<bool>? GetBindModeActive { get; set; }
     public Func<string, bool>? GetIsSelectedForBind { get; set; }
-    public Func<string, (string[] ids, string[] titles, string activeId)?> GetTabGroupInfo { get; set; }
+    public Func<string, (string[] ids, string[] titles, string activeId)?>? GetTabGroupInfo { get; set; }
 
     public ManagedWindow(string id, IWindowPlugin plugin, ActionRouter actionRouter, IPlatform platform)
     {

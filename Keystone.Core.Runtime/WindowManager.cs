@@ -226,7 +226,7 @@ public class WindowManager : IDisposable
         var nsApp = NSApplication.SharedApplication;
         while (true)
         {
-            var evt = nsApp.NextEvent(NSEventMask.AnyEvent, null, NSRunLoopMode.Default, true);
+            var evt = nsApp.NextEvent(NSEventMask.AnyEvent, NSDate.DistantPast, NSRunLoopMode.Default, true);
             if (evt == null) break;
 
             nsApp.SendEvent(evt);
