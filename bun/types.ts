@@ -72,6 +72,14 @@ export type ServiceModule = {
   stop?: () => void;
   health?: () => { ok: boolean; [k: string]: any };
   onAction?: (action: string) => void;
+
+  /** Network policy overrides — merged during service discovery. */
+  network?: {
+    /** Additional endpoints this service needs (merged with app allow-list). */
+    endpoints?: string[];
+    /** Bypass the allow-list entirely for this service. */
+    unrestricted?: boolean;
+  };
 };
 
 // === Web component contract ===

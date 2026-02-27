@@ -14,6 +14,7 @@ using Keystone.Core.Rendering;
 using Keystone.Core.Management.Bun;
 using Keystone.Core.Platform;
 using Keystone.Core.Plugins;
+using Keystone.Core.Security;
 
 namespace Keystone.Core.Runtime;
 
@@ -128,6 +129,9 @@ public class ApplicationRuntime : ICoreContext
         Environment.SetEnvironmentVariable("KEYSTONE_APP_NAME", _config.Name);
         Environment.SetEnvironmentVariable("KEYSTONE_APP_ID", _config.Id);
 
+        // Network security policy — initialize from config (plugins may merge endpoints via INetworkDeclarer)
+        NetworkPolicy.Initialize(_config.Security, _config.Bun?.CompiledExe != null);
+
         var pluginDir = Path.Combine(_rootDir, _config.Plugins.Dir);
         var userPluginDir = ResolveUserPluginDir(_config.Plugins.UserDir, _rootDir, _config.Name);
         var extensionPluginDir = ResolveUserPluginDir(_config.Plugins.ExtensionDir, _rootDir, _config.Name);
@@ -224,6 +228,11 @@ public class ApplicationRuntime : ICoreContext
             if (_pluginRegistry.GetWindow(winCfg.Component) == null)
                 _pluginRegistry.RegisterWindow(new WebWindowPlugin(winCfg));
         }
+
+        // 9b. Forward resolved network policy to Bun subprocess via env
+        //     Done after plugin loading so INetworkDeclarer endpoints are merged in.
+        Environment.SetEnvironmentVariable("KEYSTONE_NETWORK_MODE", NetworkPolicy.Enforcing ? "allowlist" : "open");
+        Environment.SetEnvironmentVariable("KEYSTONE_NETWORK_ENDPOINTS", NetworkPolicy.Serialize());
 
         // 10. Bun process — engine runtime + app bun root
         var bunConfig = _config.Bun;

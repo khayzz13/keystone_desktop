@@ -16,6 +16,40 @@ const APP_ROOT = Bun.env.KEYSTONE_APP_ROOT!;
 const IS_EXTENSION_HOST = Bun.env.KEYSTONE_EXTENSION_HOST === "true";
 const ALLOWED_CHANNELS = (Bun.env.KEYSTONE_ALLOWED_CHANNELS ?? "").split(",").filter(Boolean);
 
+// === Network endpoint allow-list ===
+
+const networkMode = (Bun.env.KEYSTONE_NETWORK_MODE ?? "open") as "open" | "allowlist";
+const networkEndpoints = new Set<string>(
+  (Bun.env.KEYSTONE_NETWORK_ENDPOINTS ?? "").split(",").filter(Boolean)
+);
+
+function isEndpointAllowed(hostPort: string): boolean {
+  if (networkMode !== "allowlist") return true;
+  if (networkEndpoints.has(hostPort)) return true;
+  const lastColon = hostPort.lastIndexOf(":");
+  const host = lastColon > 0 ? hostPort.slice(0, lastColon) : hostPort;
+  if (networkEndpoints.has(host)) return true;
+  for (const ep of networkEndpoints) {
+    if (ep.startsWith("*.") && host.endsWith(ep.slice(1))) return true;
+  }
+  return false;
+}
+
+const originalFetch = globalThis.fetch;
+(globalThis as any).__KEYSTONE_ORIGINAL_FETCH__ = originalFetch;
+
+if (networkMode === "allowlist") {
+  globalThis.fetch = function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const hostPort = url.port && url.port !== "443" && url.port !== "80"
+      ? `${url.hostname}:${url.port}` : url.hostname;
+    if (!isEndpointAllowed(hostPort)) {
+      throw new Error(`[network-policy] ${url.hostname} is not in the allowed endpoints list`);
+    }
+    return originalFetch(input, init);
+  };
+}
+
 process.title = `keystone-worker:${WORKER_NAME}`;
 process.env.KEYSTONE_APP_ROOT = APP_ROOT;
 
@@ -169,6 +203,7 @@ async function discoverServices() {
   const compiled = compiledAll?.[WORKER_NAME];
   if (compiled) {
     for (const [name, mod] of Object.entries(compiled) as [string, any][]) {
+      mergeServiceNetwork(name, mod);
       if (mod.start) {
         await mod.start(ctx);
         services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
@@ -193,11 +228,23 @@ async function discoverServices() {
       mod = require(idx);
       name = entry;
     } else continue;
+    mergeServiceNetwork(name, mod);
     if (mod.start) {
       await mod.start(ctx);
       services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
     }
     if (mod.onAction) actionHandlers.set(name, mod.onAction);
+  }
+}
+
+function mergeServiceNetwork(name: string, mod: any) {
+  if (!mod.network) return;
+  if (mod.network.endpoints) {
+    for (const ep of mod.network.endpoints) networkEndpoints.add(ep);
+    console.error(`[worker:${WORKER_NAME}] ${name}: merged ${mod.network.endpoints.length} network endpoints`);
+  }
+  if (mod.network.unrestricted) {
+    console.error(`[worker:${WORKER_NAME}] ${name}: network unrestricted`);
   }
 }
 

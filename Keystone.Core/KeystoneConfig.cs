@@ -41,6 +41,9 @@ public class KeystoneConfig
     [JsonPropertyName("processRecovery")]
     public ProcessRecoveryConfig ProcessRecovery { get; set; } = new();
 
+    [JsonPropertyName("security")]
+    public SecurityConfig Security { get; set; } = new();
+
     [JsonPropertyName("workers")]
     public List<BunWorkerConfig>? Workers { get; set; }
 
@@ -130,9 +133,20 @@ public class KeystoneConfig
         if (config.Bun is { Enabled: true } bun && string.IsNullOrWhiteSpace(bun.Root))
             ThrowInvalid(path, "'bun.root' is required when bun is enabled");
 
+        ValidateSecurity(config.Security, path);
         ValidateProcessRecovery(config.ProcessRecovery, path);
         ValidateWindows(config.Windows, path);
         ValidateWorkers(config.Workers, path);
+    }
+
+    private static void ValidateSecurity(SecurityConfig cfg, string path)
+    {
+        if (!new[] { "auto", "open", "allowlist" }.Contains(cfg.Network.Mode, StringComparer.OrdinalIgnoreCase))
+            ThrowInvalid(path, "'security.network.mode' must be one of: auto, open, allowlist");
+
+        for (var i = 0; i < cfg.Network.AllowedEndpoints.Count; i++)
+            if (string.IsNullOrWhiteSpace(cfg.Network.AllowedEndpoints[i]))
+                ThrowInvalid(path, $"'security.network.allowedEndpoints[{i}]' must be a non-empty string");
     }
 
     private static void ValidateProcessRecovery(ProcessRecoveryConfig cfg, string path)
@@ -463,4 +477,31 @@ public class ProcessRecoveryConfig
     /// <summary>Delay in ms before reloading after a WebView content process crash. Default: 200.</summary>
     [JsonPropertyName("webViewReloadDelayMs")]
     public int WebViewReloadDelayMs { get; set; } = 200;
+}
+
+// === Security configuration ===
+
+public class SecurityConfig
+{
+    [JsonPropertyName("network")]
+    public NetworkSecurityConfig Network { get; set; } = new();
+}
+
+public class NetworkSecurityConfig
+{
+    /// <summary>
+    /// "auto" (default) — open in dev, allowlist in packaged builds.
+    /// "open" — no restrictions on outbound network access.
+    /// "allowlist" — only endpoints in allowedEndpoints (plus loopback) are reachable.
+    /// </summary>
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = "auto";
+
+    /// <summary>
+    /// Allowed outbound endpoints. Hostname or hostname:port.
+    /// Supports wildcard prefix: "*.example.com" matches any subdomain.
+    /// Loopback (127.0.0.1, localhost) is always implicitly allowed.
+    /// </summary>
+    [JsonPropertyName("allowedEndpoints")]
+    public List<string> AllowedEndpoints { get; set; } = new();
 }

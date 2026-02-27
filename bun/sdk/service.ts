@@ -17,6 +17,8 @@ type ActionHandler = (action: string) => void;
 type StopHandler = () => void;
 type HealthHandler = () => { ok: boolean; [k: string]: any };
 
+type NetworkOptions = { endpoints?: string[]; unrestricted?: boolean };
+
 type ServiceConfig = {
   name: string;
   queryHandler?: QueryHandler;
@@ -25,6 +27,7 @@ type ServiceConfig = {
   healthHandler?: HealthHandler;
   intervals: Array<{ ms: number; fn: () => void | Promise<void>; timer?: ReturnType<typeof setInterval> }>;
   invokeHandlers: Array<{ channel: string; handler: (args: any) => any | Promise<any> }>;
+  network?: NetworkOptions;
 };
 
 export type ServiceHandle = {
@@ -38,6 +41,8 @@ export type ServiceHandle = {
   push: ServiceContext['push'];
   /** Register a named invoke handler callable from the browser via invoke("channel", args) */
   registerInvokeHandler: ServiceContext['registerInvokeHandler'];
+  /** Fetch — policy-enforced by default; unrestricted if service declares network.unrestricted */
+  fetch: typeof globalThis.fetch;
 };
 
 export type ServiceBuilder = {
@@ -56,6 +61,8 @@ export type ServiceBuilder = {
    * Equivalent to Electron's ipcMain.handle() — but targeting Bun instead of the main process.
    */
   handle: <TArgs = any, TResult = any>(channel: string, handler: (args: TArgs, svc: ServiceHandle) => TResult | Promise<TResult>) => ServiceBuilder;
+  /** Declare network endpoint requirements. Endpoints merge into the app allow-list; unrestricted bypasses it. */
+  network: (opts: NetworkOptions) => ServiceBuilder;
   /** Build and return the service module for export */
   build: (init?: (svc: ServiceHandle) => void | Promise<void>) => ServiceModule;
 };
@@ -96,15 +103,26 @@ export function defineService(name: string): ServiceBuilder {
       return builder;
     },
 
+    network(opts) {
+      config.network = opts;
+      return builder;
+    },
+
     build(init) {
       const mod: ServiceModule = {
         async start(ctx: ServiceContext) {
+          // Unrestricted services get the original unpatched fetch; normal services get the policy-enforced one
+          const fetchRef = config.network?.unrestricted
+            ? ((globalThis as any).__KEYSTONE_ORIGINAL_FETCH__ ?? globalThis.fetch)
+            : globalThis.fetch;
+
           handle = {
             ctx,
             store: createStore(name),
             call: ctx.call,
             push: ctx.push,
             registerInvokeHandler: ctx.registerInvokeHandler,
+            fetch: fetchRef,
           };
 
           // Register named invoke handlers
@@ -133,6 +151,7 @@ export function defineService(name: string): ServiceBuilder {
         },
       };
 
+      if (config.network) mod.network = config.network;
       return mod;
     },
   };

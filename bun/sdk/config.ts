@@ -86,6 +86,22 @@ export type KeystoneRuntimeConfig = {
      * - false: always disabled
      */
     allowEval?: "auto" | boolean;
+
+    /**
+     * Network endpoint allow-list mode. Inherited from C# config via KEYSTONE_NETWORK_MODE env var.
+     * - "open" (default): no restrictions on outbound fetch
+     * - "allowlist": only allowed hostnames/ports may be fetched
+     * Normally set via keystone.config.json security.network.mode on the C# side.
+     */
+    networkMode?: "open" | "allowlist";
+
+    /**
+     * Allowed network endpoints (hostname or hostname:port).
+     * Supports wildcard prefix: "*.example.com" matches any subdomain.
+     * Inherited from C# config via KEYSTONE_NETWORK_ENDPOINTS env var.
+     * Services can merge additional endpoints via defineService().network().
+     */
+    networkEndpoints?: string[];
   };
 };
 
@@ -100,7 +116,7 @@ const defaults: ResolvedConfig = {
   http: { enabled: true, hostname: "127.0.0.1" },
   watch: { extensions: [".ts", ".tsx", ".js", ".jsx"], debounceMs: 150 },
   health: { enabled: true, intervalMs: 30_000 },
-  security: { mode: "auto", allowedActions: [], allowEval: "auto" },
+  security: { mode: "auto", allowedActions: [], allowEval: "auto", networkMode: "open", networkEndpoints: [] },
 };
 
 /** Define your app's Keystone Desktop configuration. */

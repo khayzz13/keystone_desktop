@@ -114,10 +114,50 @@ const effectiveAllowedActionRules = resolveAllowedActionRules();
 const effectiveAllowEval = resolveEvalEnabled();
 const usingDefaultActionRules = config.security.allowedActions.length === 0;
 
+// === Network endpoint allow-list ===
+
+const networkMode = (Bun.env.KEYSTONE_NETWORK_MODE ?? config.security.networkMode ?? "open") as "open" | "allowlist";
+const networkEndpoints = new Set<string>(
+  (Bun.env.KEYSTONE_NETWORK_ENDPOINTS ?? "").split(",").filter(Boolean)
+);
+// Merge any declared in bun config
+for (const ep of config.security.networkEndpoints ?? []) networkEndpoints.add(ep);
+
+function isEndpointAllowed(hostPort: string): boolean {
+  if (networkMode !== "allowlist") return true;
+  if (networkEndpoints.has(hostPort)) return true;
+  // Strip port and check hostname-only
+  const lastColon = hostPort.lastIndexOf(":");
+  const host = lastColon > 0 ? hostPort.slice(0, lastColon) : hostPort;
+  if (networkEndpoints.has(host)) return true;
+  // Check wildcard suffixes
+  for (const ep of networkEndpoints) {
+    if (ep.startsWith("*.") && host.endsWith(ep.slice(1))) return true;
+  }
+  return false;
+}
+
+// Store original fetch before patching — unrestricted services get this reference
+const originalFetch = globalThis.fetch;
+(globalThis as any).__KEYSTONE_ORIGINAL_FETCH__ = originalFetch;
+
+if (networkMode === "allowlist") {
+  globalThis.fetch = function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const hostPort = url.port && url.port !== "443" && url.port !== "80"
+      ? `${url.hostname}:${url.port}` : url.hostname;
+    if (!isEndpointAllowed(hostPort)) {
+      throw new Error(`[network-policy] ${url.hostname} is not in the allowed endpoints list`);
+    }
+    return originalFetch(input, init);
+  };
+}
+
 console.error(
   `[host] security mode=${effectiveSecurityMode} ` +
   `eval=${effectiveAllowEval ? "enabled" : "disabled"} ` +
-  `actions=${usingDefaultActionRules ? "framework-defaults" : "config"}`
+  `actions=${usingDefaultActionRules ? "framework-defaults" : "config"} ` +
+  `network=${networkMode}${networkMode === "allowlist" ? ` (${networkEndpoints.size} endpoints)` : ""}`
 );
 
 // === Registries ===
@@ -270,6 +310,8 @@ function registerBuiltins() {
       usingDefaultActionRules,
       allowedActions: effectiveAllowedActionRules,
       preBuiltWeb: config.web.preBuilt,
+      networkMode,
+      networkEndpoints: [...networkEndpoints],
     }),
     health: () => ({ ok: true }),
   });
@@ -283,6 +325,7 @@ async function discoverServices() {
   const compiled = (globalThis as any).__KEYSTONE_COMPILED_SERVICES__;
   if (compiled) {
     for (const [name, mod] of Object.entries(compiled) as [string, any][]) {
+      mergeServiceNetwork(name, mod);
       if (mod.start) {
         await mod.start(ctx);
         services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
@@ -307,11 +350,24 @@ async function discoverServices() {
       mod = require(idx);
       name = entry;
     } else continue;
+    mergeServiceNetwork(name, mod);
     if (mod.start) {
       await mod.start(ctx);
       services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
     }
     if (mod.onAction) actionHandlers.set(name, mod.onAction);
+  }
+}
+
+/** Merge a service's declared network endpoints into the global allow-list. */
+function mergeServiceNetwork(name: string, mod: any) {
+  if (!mod.network) return;
+  if (mod.network.endpoints) {
+    for (const ep of mod.network.endpoints) networkEndpoints.add(ep);
+    console.error(`[host] ${name}: merged ${mod.network.endpoints.length} network endpoints`);
+  }
+  if (mod.network.unrestricted) {
+    console.error(`[host] ${name}: network unrestricted`);
   }
 }
 

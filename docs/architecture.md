@@ -1,4 +1,18 @@
-# Process Model
+# Architecture & Getting Started
+
+> Last updated: 2026-02-26
+
+## Documentation
+
+| Document | Contents |
+|----------|----------|
+| **Architecture & Getting Started** (this file) | Process model, IPC, getting started, project modes |
+| [Bun Layer](./bun-layer.md) | Web components, services, workers, host.ts |
+| [C# Layer](./csharp-layer.md) | ICorePlugin, plugin system, HTTP router, programmatic bootstrap |
+| [SDK Reference](./sdk-reference.md) | Bridge API, invoke/subscribe/action, dialog, shell, clipboard, theme |
+| [Configuration](./configuration.md) | keystone.json, keystone.config.ts, window chrome, build & packaging |
+
+---
 
 Keystone runs as three or more independent OS processes. Understanding this is the foundation for everything else — it determines how your code is structured, where state lives, and what boundaries you communicate across.
 
@@ -66,8 +80,6 @@ Additional Bun subprocesses, each running `worker-host.ts`. Workers have their o
 
 Workers are suited for parallelism and extension isolation — similar to what a UtilityProcess provides in other frameworks.
 
-See [Workers](./workers.md) for full documentation.
-
 ### WebKit Content Process
 
 When a window needs to show a web component, a WebKit view is created (WKWebView on macOS, WebKitGTK on Linux) and the OS-managed WebKit process spawns automatically. This is the process that actually renders the HTML/CSS/JS.
@@ -111,7 +123,7 @@ window.RegisterInvokeHandler("myapp:processFile", async args => {
 });
 ```
 
-Also available: `fetch("/api/...")` — intercepted by `bridge.ts` and routed through `HttpRouter` on the C# side. Same underlying invoke mechanism, REST-shaped API. See [HTTP Router](./http-router.md).
+Also available: `fetch("/api/...")` — intercepted by `bridge.ts` and routed through `HttpRouter` on the C# side. Same underlying invoke mechanism, REST-shaped API. See [C# Layer — HTTP Router](./csharp-layer.md#http-router).
 
 ---
 
@@ -270,8 +282,6 @@ dp.subscribe("ticks:realtime", processTick);
 
 Main Bun services also receive the `worker_ports` message and can use `ctx.workers.connect()` and `ctx.relay()` to communicate with workers.
 
-See [Workers](./workers.md) for the full communication protocol.
-
 ---
 
 ## Process Isolation Benefits
@@ -316,7 +326,7 @@ context.OnWebViewCrash += windowId => {
 
 ## Framework Landscape
 
-There are several frameworks in this space. Here's how they compare on the dimensions that matter structurally, followed by honest numbers.
+There are several frameworks in this space. Here's how they compare on the dimensions that matter structurally, followed by honest numbers. It should be noted that Keystone Desktop is in early stages and not intended for production use cases in current form. 
 
 | | Electron | Tauri | Electrobun | Electron.NET | Wails | Keystone Desktop |
 |---|---|---|---|---|---|---|
@@ -335,33 +345,199 @@ There are several frameworks in this space. Here's how they compare on the dimen
 
 Keystone Desktop's RAM footprint is in Electron territory, not Tauri/Wails territory. That's an honest characterization and worth understanding why.
 
-Tauri and Wails ship a small native binary (Rust or Go) that links against the system WebView — no bundled runtime, very small. Keystone ships the .NET runtime (~30–50 MB) alongside the application, and runs three processes: C# host, Bun subprocess, and WebKit content process. Each has a real footprint. The tradeoff is deliberate: you get a genuinely capable main process in a mature typed language, hot-reloadable C# plugins, a full TypeScript/Bun service layer with SQLite and bundling built in, and a GPU rendering path that doesn't go through a browser at all.
+Tauri and Wails ship a small native binary (Rust or Go) that links against the system WebView — no bundled runtime, very small. Keystone ships the .NET runtime (~50+MB), and Bun runtime alongside the application, and runs three processes: C# host, Bun subprocess, and WebKit content process. Each has a real footprint. The tradeoff is deliberate: you get a genuinely capable main process in a mature typed language, hot-reloadable C# plugins, a full TypeScript/Bun service layer with SQLite and bundling built in, and a GPU rendering path that doesn't go through a browser at all.
 
 Electron.NET adds an ASP.NET Core web server *inside* an Electron process — it's not a native desktop runtime, it's Electron with .NET wedged in. The architecture is fundamentally different from Keystone, where C# is the native host and owns the platform run loop directly.
 
 The .app size is large because the .NET runtime is bundled. This is the same reason Electron apps are large — they bundle Chromium. The parallel holds: you get runtime capabilities in exchange for bundle size.
 
-If binary size and baseline memory are the primary constraints, Tauri or Wails are strong choices. Keystone Desktop is for teams that want C# as a real main process — direct platform API access, hot-reloadable native code, GPU rendering — with TypeScript for services and UI, not bolted on as an afterthought.
+If binary size and baseline memory are the primary constraints, Tauri or Wails are strong choices. Keystone Desktop is intend for developer that wants C# as a real main process — direct platform API access, hot-reloadable native code, GPU rendering if needed — with TypeScript for services and UI, not bolted on as an afterthought.
 
 ---
 
-## Going C# Only
+## Getting Started
 
-The web layer is entirely optional. If you don't configure a `bun` block in `keystone.json`, Keystone doesn't spawn a Bun process and no WebView is created. Your app renders entirely in the GPU/Skia pipeline via `IWindowPlugin`.
+### Requirements
+
+**macOS:**
+- macOS 15+ (Apple Silicon)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
+- Rust toolchain — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+
+**Linux:**
+- GTK4 and WebKitGTK 4.1 (`libgtk-4-dev`, `libwebkit2gtk-4.1-dev`)
+- Vulkan drivers and headers (`vulkan-tools`, `libvulkan-dev`)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
+- Rust toolchain — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+
+### Project Structure
+
+A Keystone app is a directory with a `keystone.json` manifest and whatever layers you need:
+
+```
+my-app/
+├── keystone.json           # App manifest — the only required file
+├── build.py                # Build and run script
+├── bun/                    # TypeScript layer (optional)
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── host.ts             # Bun lifecycle hooks (optional)
+│   ├── keystone.config.ts  # Bun runtime config
+│   ├── web/
+│   │   └── app.ts          # UI component
+│   └── services/           # Background Bun services (optional)
+├── app/                    # C# app layer (optional)
+│   ├── MyApp.Core.csproj
+│   └── App.cs              # ICorePlugin entry point
+├── dylib/                  # Hot-reloadable C# plugin DLLs (optional)
+│   └── native/             # Native dylibs (Rust, C)
+└── icons/                  # App icons
+```
+
+None of the optional layers are required together — you can have web-only (no `app/`, no `dylib/`), native-only (no `bun/`), or any combination.
+
+### The App Manifest
+
+`keystone.json` is read by the runtime before anything else starts. For fully programmatic bootstrap without a config file, see [C# Layer — Programmatic Bootstrap](./csharp-layer.md#programmatic-bootstrap).
 
 ```json
 {
-  "name": "Pure Native App",
+  "name": "My App",
+  "id": "com.example.myapp",
+  "version": "0.1.0",
+
+  "windows": [
+    {
+      "component": "app",
+      "title": "My App",
+      "width": 1024,
+      "height": 700
+    }
+  ],
+
+  "bun": { "root": "bun" }
+}
+```
+
+Every key in `windows` corresponds to a component name. `"app"` maps to `bun/web/app.ts`. Windows open on launch by default — set `"spawn": false` to register a window type without opening it immediately.
+
+### Build and Run
+
+Each app ships its own `build.py` that knows its specific plugin layout and build order:
+
+```bash
+cd my-app
+python3 build.py           # build plugins into dylib/
+python3 build.py --package # build + produce MyApp.app in dist/
+```
+
+Common flags:
+
+| Flag | Effect |
+|------|--------|
+| `--package` | Produce a `.app` bundle in `dist/` after building |
+| `--bundle` | With `--package`: copy `dylib/` into the bundle (self-contained) |
+| `--allow-external` | Allow plugins not signed by this app (disables library validation) |
+| `--debug` | Debug configuration |
+| `--clean` | Remove `bin/`/`obj/` before building |
+
+### Your First Component
+
+`bun/web/app.ts` is your main window's UI. It exports `mount` and `unmount` — plain functions called by the slot host.
+
+```typescript
+import { keystone, query, dialog } from "@keystone/sdk/bridge";
+
+export function mount(root: HTMLElement) {
+  root.style.cssText = `
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--ks-bg-surface);
+    color: var(--ks-text-primary);
+    font-family: var(--ks-font);
+    padding: 32px;
+    gap: 16px;
+  `;
+
+  const h1 = document.createElement("h1");
+  h1.textContent = "Hello, Keystone";
+
+  const btn = document.createElement("button");
+  btn.textContent = "Open File";
+  btn.onclick = async () => {
+    const paths = await dialog.openFile({ multiple: false });
+    if (paths) h1.textContent = paths[0];
+  };
+
+  root.appendChild(h1);
+  root.appendChild(btn);
+}
+
+export function unmount(root: HTMLElement) {
+  root.innerHTML = "";
+}
+```
+
+No HTML file. No bundler config. The runtime bundles `app.ts` and serves it into a managed host page. HMR is automatic — save the file, the component hot-swaps in place without reloading the window.
+
+### What's Running at Runtime
+
+When you run a web-mode app:
+
+1. C# host starts. Reads `keystone.json`.
+2. Bun subprocess spawns. `host.ts` discovers services and web components.
+3. Bun writes a ready signal to stdout: `{ "status": "ready", "port": 3847, ... }`.
+4. C# reads the ready signal. `BunManager` attaches.
+5. First window spawns. C# creates the native window (NSWindow on macOS, GtkWindow on Linux) with its GPU surface.
+6. Render thread starts. GPU/Skia draws native chrome if enabled.
+7. A WebKit view is created (WKWebView on macOS, WebKitGTK on Linux). Loads `/__host__` from Bun.
+8. The host page loads your `app.ts` component. `mount(root)` is called.
+9. The bridge `keystone()` client initializes — WebSocket connects, theme tokens apply.
+
+---
+
+## Project Modes
+
+Keystone supports three compositions. All three run the same runtime.
+
+### Web-only (default)
+
+TypeScript UI + Bun services. No C#. Covers the built-in `invoke()` API surface (`app:*`, `window:*`, `dialog:*`, `shell:*`). The `examples/docs-viewer` is a complete working example of this mode.
+
+```jsonc
+{
+  "name": "My App",
+  "id": "com.example.myapp",
+  "windows": [{ "component": "app", "width": 1024, "height": 700 }],
+  "bun": { "root": "bun" }
+}
+```
+
+### Web + Native C#
+
+TypeScript UI + Bun services + C# app layer. Register custom `invoke()` handlers, control window lifecycle, use platform APIs. Required for anything beyond the built-in API surface.
+
+Add an `app/` directory with a `.csproj` and implement `ICorePlugin`. `build.py` detects the csproj automatically.
+
+### Pure Native (C# only)
+
+GPU/Skia rendering with no WebView, no Bun. Maximum performance — every pixel rendered by your plugin in the GPU pipeline (Metal on macOS, Vulkan on Linux).
+
+```json
+{
+  "name": "Pure Native",
   "id": "com.example.native"
 }
 ```
 
 ```csharp
-// A fully native app — no web layer at all
 public class MyWindow : IWindowPlugin
 {
     public string WindowType => "main";
-    public (float w, float h) DefaultSize => (1200, 800);
+    public (float Width, float Height) DefaultSize => (1200, 800);
 
     public SceneNode? BuildScene(FrameState state)
     {
@@ -378,15 +554,3 @@ public class MyWindow : IWindowPlugin
 ```
 
 The C# layer can also be omitted — if there's no `app/*.csproj`, the runtime runs web-only with built-in window management and the standard `invoke` API surface.
-
----
-
-## Next
-
-- [Getting Started](./getting-started.md) — scaffold a project and run it
-- [Workers](./workers.md) — additional Bun processes for parallelism and extension isolation
-- [Web Components](./web-components.md) — writing UI in TypeScript
-- [Native API Reference](./native-api.md) — `invoke`, `action`, `subscribe`, `dialog`, `shell`
-- [HTTP Router](./http-router.md) — `fetch("/api/...")` over the invoke bridge; Electron-style `invoke()` also supported
-- [C# App Layer](./csharp-app-layer.md) — `ICorePlugin`, custom invoke handlers, native-only windows
-- [Plugin System](./plugin-system.md) — hot-reloadable DLL plugins: service, logic, library, window types
