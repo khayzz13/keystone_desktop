@@ -59,6 +59,23 @@ public class PluginRegistry : IPluginRegistry
     public IEnumerable<string> RegisteredServiceNames { get { lock (_lock) return _servicePlugins.Keys.ToList(); } }
     public IEnumerable<string> RegisteredLibraryNames { get { lock (_lock) return _libraryPlugins.Keys.ToList(); } }
 
+    /// <summary>
+    /// Return all currently registered plugin instances implementing T.
+    /// Snapshot is thread-safe and safe to enumerate outside the lock.
+    /// </summary>
+    public IReadOnlyList<T> GetPluginsImplementing<T>() where T : class
+    {
+        lock (_lock)
+        {
+            return _corePlugins.Values.Cast<object>()
+                .Concat(_windowPlugins.Values)
+                .Concat(_servicePlugins.Values)
+                .Concat(_libraryPlugins.Values)
+                .OfType<T>()
+                .ToList();
+        }
+    }
+
     public void RegisterCore(ICorePlugin plugin)
     {
         lock (_lock)
