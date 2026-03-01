@@ -58,6 +58,10 @@ public class ManagedWindow : IDisposable
     // Registered by ApplicationRuntime for built-in APIs, and by apps for custom channels.
     private readonly Dictionary<string, Func<System.Text.Json.JsonElement, Task<object?>>> _invokeHandlers = new();
 
+    // Synchronous main-thread invoke handlers — execute inline in DispatchDirectMessage,
+    // no Task.Run. Required for operations that depend on the current NSEvent (e.g. window drag).
+    private readonly Dictionary<string, Func<System.Text.Json.JsonElement, object?>> _mainThreadInvokeHandlers = new();
+
     /// <summary>
     /// Register a native handler for invoke() calls from web components.
     /// Called when JS does: keystone().invoke(channel, args)
@@ -65,6 +69,14 @@ public class ManagedWindow : IDisposable
     /// </summary>
     public void RegisterInvokeHandler(string channel, Func<System.Text.Json.JsonElement, Task<object?>> handler)
         => _invokeHandlers[channel] = handler;
+
+    /// <summary>
+    /// Register a synchronous handler that runs inline on the main thread (no Task.Run).
+    /// Use for operations that must execute during the same run-loop pass as the triggering
+    /// browser event — e.g. window drag needs the live mouse-down NSEvent.
+    /// </summary>
+    public void RegisterMainThreadInvokeHandler(string channel, Func<System.Text.Json.JsonElement, object?> handler)
+        => _mainThreadInvokeHandlers[channel] = handler;
 
     /// <summary>
     /// Called for non-invoke direct messages from JS (postMessage without ks_invoke).
@@ -93,6 +105,22 @@ public class ManagedWindow : IDisposable
                 var args = root.TryGetProperty("args", out var a) ? a : default;
 
                 var replyChannel = $"window:{windowId}:__reply__:{id}";
+
+                // Sync main-thread handlers — execute inline, no Task.Run.
+                // Required for operations that depend on the current NSEvent (e.g. window drag).
+                if (_mainThreadInvokeHandlers.TryGetValue(channel, out var syncHandler))
+                {
+                    try
+                    {
+                        var result = syncHandler(args);
+                        BunManager.Instance.Push(replyChannel, new { result });
+                    }
+                    catch (Exception ex)
+                    {
+                        BunManager.Instance.Push(replyChannel, new { error = ex.Message });
+                    }
+                    return;
+                }
 
                 if (_invokeHandlers.TryGetValue(channel, out var handler))
                 {

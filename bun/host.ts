@@ -486,6 +486,22 @@ if (watchEnabled) {
         }).catch((e: any) => console.error(`[host] failed to rebundle "${explicitName}": ${e.message}`));
         return;
       }
+      // Check if file is a dep inside a known component's directory → rebuild via entry
+      for (const [entryAbs, name] of explicitEntryMap) {
+        const entryDir = entryAbs.slice(0, entryAbs.lastIndexOf('/') + 1);
+        if (abs.startsWith(entryDir)) {
+          Bun.build(buildOpts([entryAbs], name)).then((result: any) => {
+            if (!result.success) {
+              for (const log of result.logs) console.error(`[host] ${name}: ${log.message}`);
+              return;
+            }
+            bundledComponents.add(name);
+            console.error(`[host] rebundled component "${name}" (dep changed: ${rel})`);
+            serverRef.publish("all", JSON.stringify({ type: "__hmr__", component: name }));
+          }).catch((e: any) => console.error(`[host] failed to rebundle "${name}": ${e.message}`));
+          return;
+        }
+      }
       // Fall back to auto-discovered web.dir files
       if (rel.startsWith(config.web.dir + "/")) {
         const file = rel.replace(config.web.dir + "/", "");

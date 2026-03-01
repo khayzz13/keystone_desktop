@@ -204,12 +204,13 @@ def _resolve_engine_rel(csproj: Path, engine: Path):
     print(f"    Resolved {{{{ENGINE_REL}}}} → {rel}")
 
 
-def build_cs(app_root: Path, engine: Path, build_cfg: dict):
+def build_cs(app_root: Path, engine: Path, build_cfg: dict, no_plugins: bool = False):
     """Build C# projects in priority order from build_cs config.
 
     build_cs entries are "priority:path" where path is a .csproj or directory.
     Same priority builds sequentially. Directories build all contained .csproj files.
     Falls back to legacy single-assembly build if build_cs is absent.
+    If no_plugins is True, only the lowest priority group (core) is built.
     """
     cs_cfg = build_cfg.get("build_cs")
     if not cs_cfg or not isinstance(cs_cfg, dict):
@@ -227,7 +228,12 @@ def build_cs(app_root: Path, engine: Path, build_cfg: dict):
             prio, path = 0, raw.strip().strip('"').strip("'")
         groups.setdefault(prio, []).append((label, path))
 
-    for prio in sorted(groups):
+    priorities = sorted(groups)
+    if no_plugins and len(priorities) > 1:
+        priorities = [priorities[0]]
+        print(f"\n  --no-plugins: skipping plugin builds (only priority {priorities[0]})")
+
+    for prio in priorities:
         print(f"\n=== Building C# [priority {prio}] ===")
         for label, path in groups[prio]:
             resolved = app_root / path
@@ -314,20 +320,20 @@ def resolve_dylib_dir(build_cfg: dict, runtime_cfg: dict) -> str:
     return plugins.get("dir", "dylib") if isinstance(plugins, dict) else "dylib"
 
 
-def cmd_build(app_root: Path, build_cfg: dict, runtime_cfg: dict):
+def cmd_build(app_root: Path, build_cfg: dict, runtime_cfg: dict, no_plugins: bool = False):
     """Build step: compile C# projects + install bun deps + vendor engine."""
     engine = find_engine(build_cfg)
     bun_root = resolve_bun_root(build_cfg, runtime_cfg)
 
-    build_cs(app_root, engine, build_cfg)
+    build_cs(app_root, engine, build_cfg, no_plugins=no_plugins)
     setup_bun(app_root, engine, bun_root)
 
     return engine
 
 
-def cmd_run(app_root: Path, build_cfg: dict, runtime_cfg: dict):
+def cmd_run(app_root: Path, build_cfg: dict, runtime_cfg: dict, no_plugins: bool = False):
     """Build and run in dev mode."""
-    engine = cmd_build(app_root, build_cfg, runtime_cfg)
+    engine = cmd_build(app_root, build_cfg, runtime_cfg, no_plugins=no_plugins)
     binary = find_engine_binary(engine)
     if binary is None:
         print(f"  ERROR: Engine binary not found. Build the engine first.")
@@ -348,9 +354,9 @@ def cmd_run(app_root: Path, build_cfg: dict, runtime_cfg: dict):
 
 
 def cmd_package(app_root: Path, build_cfg: dict, runtime_cfg: dict,
-                mode=None, dmg=False, allow_external=False):
+                mode=None, dmg=False, allow_external=False, no_plugins: bool = False):
     """Build and package into distributable .app bundle."""
-    engine = cmd_build(app_root, build_cfg, runtime_cfg)
+    engine = cmd_build(app_root, build_cfg, runtime_cfg, no_plugins=no_plugins)
     packager = engine / "tools" / "package.py"
     if not packager.exists():
         print(f"  ERROR: Packager not found at {packager}")
@@ -383,6 +389,8 @@ def main():
     parser.add_argument("--dmg", action="store_true", help="Create DMG")
     parser.add_argument("--allow-external", action="store_true",
                         help="Override plugins.allow_external_signatures")
+    parser.add_argument("--no-plugins", action="store_true",
+                        help="Skip plugin builds (only core + bun)")
 
     args = parser.parse_args()
     app_root = Path(args.app_root).resolve()
@@ -397,13 +405,14 @@ def main():
     if args.command == "clean":
         cmd_clean(app_root, build_cfg)
     elif args.command == "build":
-        cmd_build(app_root, build_cfg, runtime_cfg)
+        cmd_build(app_root, build_cfg, runtime_cfg, no_plugins=args.no_plugins)
     elif args.command == "run":
-        cmd_run(app_root, build_cfg, runtime_cfg)
+        cmd_run(app_root, build_cfg, runtime_cfg, no_plugins=args.no_plugins)
     elif args.command == "package":
         cmd_package(app_root, build_cfg, runtime_cfg,
                     mode=args.mode, dmg=args.dmg,
-                    allow_external=args.allow_external)
+                    allow_external=args.allow_external,
+                    no_plugins=args.no_plugins)
 
 
 if __name__ == "__main__":

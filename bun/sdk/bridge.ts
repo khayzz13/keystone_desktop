@@ -432,6 +432,9 @@ export const nativeWindow = {
   /** Center the window on the main screen */
   center: (): Promise<void> =>
     keystone().invoke('window:center'),
+  /** Initiate a native window drag. Must be called from a mousedown handler. */
+  startDrag: (): Promise<void> =>
+    keystone().invoke('window:startDrag'),
 };
 
 export const dialog = {

@@ -826,6 +826,12 @@ public class ApplicationRuntime : ICoreContext
             return Task.FromResult<object?>(null);
         });
 
+        window.RegisterMainThreadInvokeHandler("window:startDrag", _ =>
+        {
+            window.NativeWindow?.StartDrag();
+            return null;
+        });
+
         // ── dialog ───────────────────────────────────────────────────────
 
 #if MACOS
