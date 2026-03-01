@@ -1,6 +1,6 @@
 # C# Layer
 
-> Last updated: 2026-02-26
+> Last updated: 2026-02-28
 
 The C# host is Keystone's main process — the equivalent of Electron's main process, written in C#. You get the full .NET 10 standard library, direct P/Invoke to platform frameworks (AppKit/Metal on macOS, GTK4/Vulkan on Linux), and native threads with real memory ownership.
 
@@ -122,7 +122,7 @@ context.OnWebViewCrash += windowId =>
 
 ## Custom Invoke Handlers
 
-`invoke()` from the TypeScript side resolves to a named handler registered on `ManagedWindow`. Built-in handlers cover `app:*`, `window:*`, `dialog:*`, and `shell:*`. Register your own for anything custom.
+`invoke()` from the TypeScript side resolves to a named handler registered on `ManagedWindow`. Built-in handlers cover `app:*`, `window:*`, `dialog:*`, `external:*`, `darkMode:*`, `battery:*`, and `hotkey:*`. Register your own for anything custom.
 
 The handler signature is `Func<JsonElement, Task<object?>>`:
 

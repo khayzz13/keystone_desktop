@@ -9,7 +9,7 @@
 
 process.title = process.env.KEYSTONE_APP_NAME ?? process.env.KEYSTONE_APP_ID ?? "keystone";
 
-import { readdirSync, existsSync, statSync, watch, realpathSync } from "fs";
+import { readdirSync, existsSync, statSync, watch, realpathSync, readFileSync } from "fs";
 import { join } from "path";
 import type { ServerWebSocket } from "bun";
 import type { Request, ServiceContext, WorkerConnection, AppHostModule, HostContext } from "./types";
@@ -30,7 +30,7 @@ async function loadAppConfig(): Promise<ResolvedConfig> {
   const resolvedPath = join(APP_ROOT, "keystone.resolved.json");
   if (existsSync(resolvedPath)) {
     try {
-      const resolved = JSON.parse(require("fs").readFileSync(resolvedPath, "utf-8"));
+      const resolved = JSON.parse(readFileSync(resolvedPath, "utf-8"));
       console.error(`[host] loaded pre-resolved config from ${resolvedPath}`);
       return resolved as ResolvedConfig;
     } catch (e: any) {
@@ -43,8 +43,8 @@ async function loadAppConfig(): Promise<ResolvedConfig> {
   const tsConfigPath = join(APP_ROOT, "keystone.config.ts");
   if (existsSync(tsConfigPath)) {
     try {
-      const mod = require(tsConfigPath);
-      userConfig = mod.default ?? mod;
+      const raw = await import(tsConfigPath);
+      userConfig = raw.default ?? raw;
       console.error(`[host] loaded config from ${tsConfigPath}`);
     } catch (e: any) {
       console.error(`[host] failed to load config: ${e.message}, using defaults`);
@@ -59,7 +59,7 @@ async function loadAppConfig(): Promise<ResolvedConfig> {
   ]) {
     if (existsSync(jsonPath)) {
       try {
-        const json = JSON.parse(require("fs").readFileSync(jsonPath, "utf-8"));
+        const json = JSON.parse(readFileSync(jsonPath, "utf-8"));
         const bunCfg = json.bun;
         if (bunCfg?.preBuiltWeb) {
           userConfig.web = { ...userConfig.web, preBuilt: true };
@@ -319,7 +319,7 @@ function registerBuiltins() {
 
 // === Discovery ===
 
-async function discoverServices() {
+async function discoverServices(bustCache = false) {
   // Compiled mode — services statically imported into the exe at package time.
   // The packager generates a wrapper that sets this global before importing host.ts.
   const compiled = (globalThis as any).__KEYSTONE_COMPILED_SERVICES__;
@@ -337,17 +337,20 @@ async function discoverServices() {
   }
 
   if (!existsSync(serviceDir)) return;
+  const cacheSuffix = bustCache ? `?t=${Date.now()}` : "";
   for (const entry of readdirSync(serviceDir)) {
     const entryPath = join(serviceDir, entry);
     const stat = statSync(entryPath);
     let mod: any, name: string;
     if (stat.isFile() && /\.[jt]s$/.test(entry)) {
-      mod = require(entryPath);
+      const imported = await import(entryPath + cacheSuffix);
+      mod = imported.default ?? imported;
       name = entry.replace(/\.[jt]s$/, "");
     } else if (stat.isDirectory()) {
       const idx = join(entryPath, "index.ts");
       if (!existsSync(idx)) continue;
-      mod = require(idx);
+      const imported = await import(idx + cacheSuffix);
+      mod = imported.default ?? imported;
       name = entry;
     } else continue;
     mergeServiceNetwork(name, mod);
@@ -371,18 +374,6 @@ function mergeServiceNetwork(name: string, mod: any) {
   }
 }
 
-// === Require cache helpers ===
-
-function clearCacheForDir(dir: string) {
-  for (const key of Object.keys(require.cache)) {
-    if (key.startsWith(dir)) delete require.cache[key];
-  }
-}
-
-function clearCacheForFile(file: string) {
-  delete require.cache[file];
-}
-
 // === Reload ===
 
 async function reloadService(name: string) {
@@ -398,10 +389,8 @@ async function reloadService(name: string) {
 
   let entryPath: string;
   if (existsSync(dirPath) && statSync(dirPath).isDirectory()) {
-    clearCacheForDir(dirPath);
     entryPath = join(dirPath, "index.ts");
   } else if (existsSync(filePath)) {
-    clearCacheForFile(filePath);
     entryPath = filePath;
   } else {
     console.error(`[host] service ${name} not found on disk, removing`);
@@ -411,7 +400,8 @@ async function reloadService(name: string) {
   }
 
   try {
-    const mod = require(entryPath);
+    const imported = await import(entryPath + `?t=${Date.now()}`);
+    const mod = imported.default ?? imported;
     if (mod.start) {
       await mod.start(ctx);
       services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
@@ -435,13 +425,7 @@ async function reloadAll() {
   actionHandlers.clear();
   services.clear();
 
-  for (const key of Object.keys(require.cache)) {
-    if (key.startsWith(APP_ROOT) && !key.includes("node_modules")) {
-      delete require.cache[key];
-    }
-  }
-
-  await discoverServices();
+  await discoverServices(true);
   if (config.web.autoBundle) await bundleWebComponents();
 
   emitReady();
@@ -866,8 +850,8 @@ async function loadAppHost(): Promise<AppHostModule | null> {
   const hostPath = join(APP_ROOT, "host.ts");
   if (!existsSync(hostPath)) return null;
   try {
-    const mod = require(hostPath);
-    return (mod.default ?? mod) as AppHostModule;
+    const raw = await import(hostPath);
+    return (raw.default ?? raw) as AppHostModule;
   } catch (e: any) {
     console.error(`[host] failed to load app host.ts: ${e.message}`);
     return null;

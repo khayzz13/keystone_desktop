@@ -387,12 +387,23 @@ export function keystone(): KeystoneClient {
 }
 
 // === Typed native API namespaces ===
-// These wrap invoke() and action() with ergonomic, Electron-parity APIs.
+// These wrap invoke() and action() with named, framework-native APIs.
 // All invoke() calls require WKWebView — they will reject in non-native environments.
 
+export type AppPaths = {
+  /** ~/Library/Application Support/<bundleId> (or platform equivalent) */
+  data: string;
+  documents: string;
+  downloads: string;
+  desktop: string;
+  temp: string;
+  /** Directory containing keystone.json */
+  root: string;
+};
+
 export const app = {
-  /** Get a well-known filesystem path by name. Names: userData, documents, downloads, desktop, temp, appRoot */
-  getPath: (name: string): Promise<string> => keystone().invoke('app:getPath', { name }),
+  /** Returns all well-known filesystem paths in a single call. */
+  paths: (): Promise<AppPaths> => keystone().invoke('app:paths'),
   getVersion: (): Promise<string> => keystone().invoke('app:getVersion'),
   getName: (): Promise<string> => keystone().invoke('app:getName'),
   quit: () => keystone().action('app:quit'),
@@ -435,11 +446,11 @@ export const dialog = {
     keystone().invoke('dialog:showMessage', opts),
 };
 
-export const shell = {
-  /** Open a URL in the system default browser */
-  openExternal: (url: string) => keystone().action(`shell:openExternal:${url}`),
-  /** Open a file or directory with its default application. Returns true on success. */
-  openPath: (path: string): Promise<boolean> => keystone().invoke('shell:openPath', { path }),
+export const external = {
+  /** Open a URL outside the app — system default browser or handler. */
+  url: (url: string) => keystone().action(`external:url:${url}`),
+  /** Open a file or directory outside the app with its default application. Returns true on success. */
+  path: (path: string): Promise<boolean> => keystone().invoke('external:path', { path }),
 };
 
 // === New API namespaces ===
@@ -449,7 +460,7 @@ export type DisplayInfo = {
   scaleFactor: number; primary: boolean;
 };
 
-export type PowerStatus = {
+export type BatteryStatus = {
   /** true when running on battery (false on AC or when status is unknown) */
   onBattery: boolean;
   /** 0–100, or -1 when unknown (desktop / AC-only hardware) */
@@ -486,9 +497,9 @@ export const notification = {
     keystone().invoke('notification:show', { title, body }),
 };
 
-export const nativeTheme = {
+export const darkMode = {
   /** Returns true when the system is in dark mode. */
-  isDarkMode: (): Promise<boolean> => keystone().invoke('nativeTheme:isDarkMode'),
+  isDark: (): Promise<boolean> => keystone().invoke('darkMode:isDark'),
   /**
    * Subscribe to system theme changes.
    * The callback fires immediately with the current value, then on every change.
@@ -498,18 +509,18 @@ export const nativeTheme = {
     keystone().subscribe('__nativeTheme__', (data: any) => cb(!!data?.dark)),
 };
 
-export const powerMonitor = {
+export const battery = {
   /** Returns the current power state: AC/battery and battery percentage. */
-  getStatus: (): Promise<PowerStatus> => keystone().invoke('powerMonitor:getStatus'),
+  status: (): Promise<BatteryStatus> => keystone().invoke('battery:status'),
   /**
    * Subscribe to power state changes pushed by C#.
    * Returns an unsubscribe function.
    */
-  onChange: (cb: (status: PowerStatus) => void): (() => void) =>
+  onChange: (cb: (status: BatteryStatus) => void): (() => void) =>
     keystone().subscribe('__powerMonitor__', cb),
 };
 
-export const globalShortcut = {
+export const hotkey = {
   /**
    * Register a process-wide keyboard shortcut.
    * Accelerator format: "CommandOrControl+Shift+P", "Alt+F4", "F5", etc.
@@ -517,20 +528,20 @@ export const globalShortcut = {
    * or unsupported on this platform).
    */
   register: (accelerator: string): Promise<boolean> =>
-    keystone().invoke('globalShortcut:register', { accelerator }),
+    keystone().invoke('hotkey:register', { accelerator }),
   /** Unregister a previously registered shortcut. */
   unregister: (accelerator: string): Promise<void> =>
-    keystone().invoke('globalShortcut:unregister', { accelerator }),
+    keystone().invoke('hotkey:unregister', { accelerator }),
   /** Returns true if this accelerator is registered by this process. */
   isRegistered: (accelerator: string): Promise<boolean> =>
-    keystone().invoke('globalShortcut:isRegistered', { accelerator }),
+    keystone().invoke('hotkey:isRegistered', { accelerator }),
   /**
    * Subscribe to a specific shortcut firing.
    * Must call register() first.
    * Returns an unsubscribe function.
    */
-  onFired: (accelerator: string, cb: () => void): (() => void) =>
-    keystone().subscribe(`globalShortcut:${accelerator}`, cb),
+  on: (accelerator: string, cb: () => void): (() => void) =>
+    keystone().subscribe(`hotkey:${accelerator}`, cb),
 };
 
 export const headless = {

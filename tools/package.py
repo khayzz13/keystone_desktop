@@ -342,25 +342,24 @@ def package(app_root: Path, engine: Path, mode_override=None,
                 print(f"  WARNING: appAssembly not found: {src}")
 
     # ── 6. Bun runtime ──────────────────────────────────────────────────────
-    # Pre-bundle web components into JS/CSS, compile host.ts into single-file exe.
-    # The bundle ships pre-built assets — no raw .ts source, no Bun.build() at runtime.
+    # Production (default): pre-bundle web, compile services into exe. No loose files.
+    # Dev mode: compile only the host exe; point bun.root at the live source directory
+    #           so services + web are discovered from disk with full hot-reload support.
 
     bun_cfg = config.get("bun", {})
     compiled_exe_name = None
     compiled_worker_name = None
     pre_built_web = False
+    bun_dev_mode = bool(pkg_cfg.get("dev_mode", False))
     if isinstance(bun_cfg, dict) and bun_cfg.get("enabled", True):
         bun_root = app_root / bun_cfg.get("root", "bun")
         bundle_bun = bundle_resources / bun_cfg.get("root", "bun")
         bundle_bun.mkdir(parents=True, exist_ok=True)
 
-        # 6a. Pre-bundle web components (JS/CSS output only — no .ts source in bundle)
+        # Read bun-side config: extract web entries + resolve full config for distribution.
         bun_config_ts = bun_root / "keystone.config.ts"
         web_dir_name = "web"
         web_components = {}
-
-        # Read bun-side config: extract web entries + resolve full config for distribution.
-        # The resolved config is written as JSON so the compiled exe doesn't need .ts at runtime.
         resolved_bun_config = None
         if bun_config_ts.exists():
             try:
@@ -385,55 +384,59 @@ def package(app_root: Path, engine: Path, mode_override=None,
             except Exception as e:
                 print(f"  WARNING: Could not parse bun config: {e}")
 
-        # Auto-discover .ts/.tsx in web dir if no explicit entries
+        # Auto-discover .ts/.tsx in web dir — merge with explicit entries (don't overwrite)
         web_src_dir = bun_root / web_dir_name
-        if not web_components and web_src_dir.exists():
+        if web_src_dir.exists():
             for f in sorted(web_src_dir.iterdir()):
                 if f.suffix in (".ts", ".tsx") and f.is_file():
                     name = f.stem
-                    web_components[name] = f"./{web_dir_name}/{f.name}"
+                    if name not in web_components:
+                        web_components[name] = f"./{web_dir_name}/{f.name}"
 
-        bundle_web_dir = bundle_bun / web_dir_name
-        bundle_web_dir.mkdir(parents=True, exist_ok=True)
+        services_dir_name = "services"
+        if resolved_bun_config:
+            services_dir_name = resolved_bun_config.get("services", {}).get("dir", "services")
 
-        if web_components and bun_root.exists():
-            print(f"  Pre-bundling {len(web_components)} web component(s)...")
-            for name, entry in web_components.items():
-                entry_abs = bun_root / entry.lstrip("./")
-                if not entry_abs.exists():
-                    print(f"    WARNING: {entry} not found, skipping {name}")
-                    continue
-                # Use Bun.build() JS API — supports naming with [ext] for JS+CSS output
-                bundle_script = f"""
-                const result = await Bun.build({{
-                    entrypoints: ["{entry_abs}"],
-                    outdir: "{bundle_web_dir}",
-                    target: "browser",
-                    format: "esm",
-                    naming: "{name}.[ext]",
-                }});
-                if (!result.success) {{
-                    for (const log of result.logs) console.error(log.message);
-                    process.exit(1);
-                }}
-                console.log("{name}: " + result.outputs.length + " file(s)");
-                """
-                run(["bun", "-e", bundle_script], cwd=bun_root)
-                pre_built_web = True
+        # 6a. Web components (production only — dev mode reads source dir directly)
+        if not bun_dev_mode:
+            bundle_web_dir = bundle_bun / web_dir_name
+            bundle_web_dir.mkdir(parents=True, exist_ok=True)
 
-        # 6b. (Services are compiled directly into the exe — see steps 6e/6f)
+            if web_components and bun_root.exists():
+                print(f"  Pre-bundling {len(web_components)} web component(s)...")
+                for name, entry in web_components.items():
+                    entry_abs = bun_root / entry.lstrip("./")
+                    if not entry_abs.exists():
+                        print(f"    WARNING: {entry} not found, skipping {name}")
+                        continue
+                    bundle_script = f"""
+                    const result = await Bun.build({{
+                        entrypoints: ["{entry_abs}"],
+                        outdir: "{bundle_web_dir}",
+                        target: "browser",
+                        format: "esm",
+                        naming: "{name}.[ext]",
+                    }});
+                    if (!result.success) {{
+                        for (const log of result.logs) console.error(log.message);
+                        process.exit(1);
+                    }}
+                    console.log("{name}: " + result.outputs.length + " file(s)");
+                    """
+                    run(["bun", "-e", bundle_script], cwd=bun_root)
+                    pre_built_web = True
+
+        # 6b. Workers config
         workers_cfg = config.get("workers", []) or []
 
-        # 6c. Write pre-resolved bun config as JSON
-        #     The compiled exe loads this directly — no .ts evaluation needed at runtime.
-        if resolved_bun_config:
-            # Inject preBuilt flag into the resolved config
+        # 6c. Write pre-resolved bun config as JSON (production only)
+        if resolved_bun_config and not bun_dev_mode:
             resolved_bun_config["web"]["preBuilt"] = True
             resolved_json = bundle_bun / "keystone.resolved.json"
             resolved_json.write_text(json.dumps(resolved_bun_config, indent=2))
             print(f"  Bun config: keystone.resolved.json (pre-resolved)")
 
-        # 6e. Compile host.ts → single-file executable (services baked in)
+        # 6e. Compile host.ts → single-file executable
         host_ts = bun_root / "node_modules" / "keystone-desktop" / "host.ts"
         if not host_ts.exists():
             host_ts = engine / "bun" / "host.ts"
@@ -442,36 +445,41 @@ def package(app_root: Path, engine: Path, mode_override=None,
             compiled_exe_name = safe_name
             compiled_exe_path = bundle_macos / compiled_exe_name
 
-            # Discover main host services — static imports get compiled into the exe
-            services_dir_name = "services"
-            if resolved_bun_config:
-                services_dir_name = resolved_bun_config.get("services", {}).get("dir", "services")
-            main_services = discover_services(bun_root / services_dir_name)
-
-            if main_services:
-                # Generate wrapper that statically imports services then boots host.ts
-                wrapper = bun_root / "_compiled_host_entry.ts"
-                lines = []
-                for i, (name, path) in enumerate(main_services):
-                    lines.append(f'import * as _svc{i} from "{path}";')
-                lines.append('(globalThis as any).__KEYSTONE_COMPILED_SERVICES__ = {')
-                for i, (name, path) in enumerate(main_services):
-                    lines.append(f'  "{name}": _svc{i},')
-                lines.append('};')
-                lines.append(f'await import("{host_ts}");')
-                wrapper.write_text('\n'.join(lines))
-
-                svc_names = ", ".join(n for n, _ in main_services)
-                print(f"  Compiling Bun -> {compiled_exe_name} (services: {svc_names})...")
-                try:
-                    run(["bun", "build", "--compile", str(wrapper),
-                         "--outfile", str(compiled_exe_path)])
-                finally:
-                    wrapper.unlink(missing_ok=True)
+            if bun_dev_mode:
+                # Dev mode: skip bun build --compile entirely.
+                # Compiled exes break dynamic import() CJS resolution chains (bun limitation).
+                # C# falls back to `bun run node_modules/keystone-desktop/host.ts APP_ROOT`
+                # which has full filesystem CJS resolution. Services hot-reload from live disk.
+                compiled_exe_name = None
+                print(f"  Dev mode: skipping compile — C# will bun run node_modules/keystone-desktop/host.ts")
+                print(f"  Bun root: {bun_root} (live source, hot-reload enabled)")
             else:
-                print(f"  Compiling Bun -> {compiled_exe_name}...")
-                run(["bun", "build", "--compile", str(host_ts),
-                     "--outfile", str(compiled_exe_path)])
+                # Production: bake services into exe via __KEYSTONE_COMPILED_SERVICES__
+                main_services = discover_services(bun_root / services_dir_name)
+
+                if main_services:
+                    wrapper = bun_root / "_compiled_host_entry.ts"
+                    lines = []
+                    for i, (name, path) in enumerate(main_services):
+                        lines.append(f'import * as _svc{i} from "{path}";')
+                    lines.append('(globalThis as any).__KEYSTONE_COMPILED_SERVICES__ = {')
+                    for i, (name, path) in enumerate(main_services):
+                        lines.append(f'  "{name}": _svc{i},')
+                    lines.append('};')
+                    lines.append(f'await import("{host_ts}");')
+                    wrapper.write_text('\n'.join(lines))
+
+                    svc_names = ", ".join(n for n, _ in main_services)
+                    print(f"  Compiling Bun -> {compiled_exe_name} (services: {svc_names})...")
+                    try:
+                        run(["bun", "build", "--compile", str(wrapper),
+                             "--outfile", str(compiled_exe_path)])
+                    finally:
+                        wrapper.unlink(missing_ok=True)
+                else:
+                    print(f"  Compiling Bun -> {compiled_exe_name}...")
+                    run(["bun", "build", "--compile", str(host_ts),
+                         "--outfile", str(compiled_exe_path)])
         else:
             print(f"  WARNING: host.ts not found — Bun runtime not compiled")
 
@@ -597,7 +605,7 @@ def package(app_root: Path, engine: Path, mode_override=None,
         rt_plugins["allowExternalSignatures"] = allow_external
         runtime_config["plugins"] = rt_plugins
 
-    if compiled_exe_name or pre_built_web or compiled_worker_name:
+    if compiled_exe_name or pre_built_web or compiled_worker_name or bun_dev_mode:
         rt_bun = dict(runtime_config.get("bun", {})) if isinstance(runtime_config.get("bun"), dict) else {}
         if compiled_exe_name:
             rt_bun["compiledExe"] = compiled_exe_name
@@ -605,6 +613,10 @@ def package(app_root: Path, engine: Path, mode_override=None,
             rt_bun["compiledWorkerExe"] = compiled_worker_name
         if pre_built_web:
             rt_bun["preBuiltWeb"] = True
+        if bun_dev_mode:
+            # Point bun.root at the live source directory so the host exe discovers
+            # services and web components from disk with full hot-reload support.
+            rt_bun["root"] = str(bun_root.resolve())
         runtime_config["bun"] = rt_bun
 
     config_name = "keystone.config.json"

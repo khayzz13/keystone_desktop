@@ -41,6 +41,10 @@ package:
   category: public.app-category.utilities
   minimum_system_version: "15.0"
 
+  # Dev mode: ship Bun services + web components as source files with hot-reload.
+  # Production mode (default): compile everything into the exe, pre-bundle web assets.
+  dev_mode: false
+
   # Create a .dmg alongside the .app after packaging.
   dmg: false
 

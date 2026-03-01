@@ -687,6 +687,18 @@ public class ApplicationRuntime : ICoreContext
             nativeWindow.Show();
 
         RegisterBuiltinInvokeHandlers(managedWindow);
+
+        // Web-only windows (renderless: true) bypass BuildScene/Flex/slot machinery.
+        // Load the component URL directly into a full-window WebView.
+        if (renderless && plugin is WebWindowPlugin)
+        {
+            var port = BunManager.Instance.BunPort;
+            if (port > 0)
+                managedWindow.LoadWebComponent(windowType, port);
+            else
+                Console.WriteLine($"[ApplicationRuntime] Warning: Bun not ready when spawning web-only window '{windowType}'");
+        }
+
         Console.WriteLine($"[ApplicationRuntime] Spawned {windowType} window id={managedWindow.Id} titleBarStyle={titleBarStyle}");
         return (nativeWindow, managedWindow);
     }
@@ -695,7 +707,7 @@ public class ApplicationRuntime : ICoreContext
 
     /// <summary>
     /// Register all built-in invoke() handlers on a freshly spawned window.
-    /// These mirror Electron's ipcMain.handle() built-ins: app, window, dialog, shell.
+    /// Built-in invoke handlers: app, window, dialog, external, clipboard, screen, darkMode, battery, hotkey.
     /// </summary>
     private void RegisterBuiltinInvokeHandlers(ManagedWindow window)
     {
@@ -703,21 +715,18 @@ public class ApplicationRuntime : ICoreContext
 
         // ── app ──────────────────────────────────────────────────────────
 
-        window.RegisterInvokeHandler("app:getPath", args =>
+        window.RegisterInvokeHandler("app:paths", _ =>
         {
-            var name = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
-                       args.TryGetProperty("name", out var n) ? n.GetString() : null;
-            var path = name switch
+            var paths = new
             {
-                "userData" => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), _config.Name),
-                "documents" => Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "downloads" => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"),
-                "desktop" => Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                "temp" => Path.GetTempPath(),
-                "appRoot" => _rootDir,
-                _ => _rootDir,
+                data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), _config.Name),
+                documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"),
+                desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                temp = Path.GetTempPath(),
+                root = _rootDir,
             };
-            return Task.FromResult<object?>(path);
+            return Task.FromResult<object?>(paths);
         });
 
         window.RegisterInvokeHandler("app:getVersion", _ =>
@@ -954,9 +963,9 @@ public class ApplicationRuntime : ICoreContext
         });
 #endif
 
-        // ── shell ─────────────────────────────────────────────────────────
+        // ── external ──────────────────────────────────────────────────────
 
-        window.RegisterInvokeHandler("shell:openPath", args =>
+        window.RegisterInvokeHandler("external:path", args =>
         {
             var path = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                        args.TryGetProperty("path", out var p) ? p.GetString() : null;
@@ -1024,14 +1033,14 @@ public class ApplicationRuntime : ICoreContext
             return Task.FromResult<object?>(new { x = mx, y = my });
         });
 
-        // ── nativeTheme ───────────────────────────────────────────────────────
+        // ── darkMode ──────────────────────────────────────────────────────────
 
-        window.RegisterInvokeHandler("nativeTheme:isDarkMode", _ =>
+        window.RegisterInvokeHandler("darkMode:isDark", _ =>
             Task.FromResult<object?>(_platform.IsDarkMode()));
 
-        // ── powerMonitor ──────────────────────────────────────────────────────
+        // ── battery ───────────────────────────────────────────────────────────
 
-        window.RegisterInvokeHandler("powerMonitor:getStatus", _ =>
+        window.RegisterInvokeHandler("battery:status", _ =>
         {
             var s = _platform.GetPowerStatus();
             return Task.FromResult<object?>(new { onBattery = s.OnBattery, batteryPercent = s.BatteryPercent });
@@ -1049,9 +1058,9 @@ public class ApplicationRuntime : ICoreContext
             return (object?)null;
         });
 
-        // ── globalShortcut ────────────────────────────────────────────────────
+        // ── hotkey ────────────────────────────────────────────────────────────
 
-        window.RegisterInvokeHandler("globalShortcut:register", args =>
+        window.RegisterInvokeHandler("hotkey:register", args =>
         {
             var acc = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                       args.TryGetProperty("accelerator", out var a) ? a.GetString() : null;
@@ -1059,7 +1068,7 @@ public class ApplicationRuntime : ICoreContext
             return Task.FromResult<object?>(GlobalShortcutManager.Register(acc, windowId));
         });
 
-        window.RegisterInvokeHandler("globalShortcut:unregister", args =>
+        window.RegisterInvokeHandler("hotkey:unregister", args =>
         {
             var acc = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                       args.TryGetProperty("accelerator", out var a) ? a.GetString() : null;
@@ -1067,7 +1076,7 @@ public class ApplicationRuntime : ICoreContext
             return Task.FromResult<object?>(null);
         });
 
-        window.RegisterInvokeHandler("globalShortcut:isRegistered", args =>
+        window.RegisterInvokeHandler("hotkey:isRegistered", args =>
         {
             var acc = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                       args.TryGetProperty("accelerator", out var a) ? a.GetString() : null;

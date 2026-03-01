@@ -142,9 +142,9 @@ public class ActionRouter
             _windowManager.CloseWindow(sourceWindowId);
         else if (action == "app:quit")
             _windowManager.QuitApp();
-        else if (action.StartsWith("shell:openExternal:"))
+        else if (action.StartsWith("external:url:"))
         {
-            var url = action[19..];
+            var url = action[13..];
             if (!string.IsNullOrEmpty(url))
                 Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         }

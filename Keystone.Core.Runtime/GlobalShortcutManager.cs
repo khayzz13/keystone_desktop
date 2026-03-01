@@ -1,8 +1,8 @@
 // GlobalShortcutManager — process-wide keyboard shortcut registration.
-// On hotkey fire, pushes to channel "globalShortcut:{accelerator}" via BunManager
-// so any subscribed window receives it via subscribe() in the browser SDK.
+// On hotkey fire, pushes to channel "hotkey:{accelerator}" via BunManager
+// so any subscribed window receives it via hotkey.on() in the browser SDK.
 //
-// Accelerator format mirrors Electron: modifier+key, e.g. "CommandOrControl+Shift+P"
+// Accelerator format: modifier+key, e.g. "CommandOrControl+Shift+P"
 // Modifiers: Control/Ctrl, Shift, Alt, Meta/Command/Cmd, CommandOrControl
 // Keys: A-Z, 0-9, F1-F12, and common named keys (Enter, Escape, Space, etc.)
 
@@ -68,7 +68,7 @@ public static class GlobalShortcutManager
 
     private static void OnFired(string accelerator)
     {
-        BunManager.Instance.Push($"globalShortcut:{accelerator}", new { accelerator });
+        BunManager.Instance.Push($"hotkey:{accelerator}", new { accelerator });
         Console.WriteLine($"[GlobalShortcut] Fired: {accelerator}");
     }
 }

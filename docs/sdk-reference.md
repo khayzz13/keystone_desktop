@@ -1,6 +1,6 @@
 # SDK Reference
 
-> Last updated: 2026-02-26
+> Last updated: 2026-02-28
 
 The `@keystone/sdk/bridge` module is the client-side bridge between your web components (running in WKWebView) and the C# + Bun host process. It gives you typed access to native OS APIs, pub/sub channels, service queries, and lifecycle hooks.
 
@@ -92,18 +92,22 @@ Returns the app name from `keystone.json`.
 
 Returns the app version from `keystone.json`.
 
-### `app.getPath(name): Promise<string>`
+### `app.paths(): Promise<AppPaths>`
 
-Returns a well-known filesystem path.
+Returns all well-known filesystem paths in a single call.
 
-| `name` | Resolves to |
-|--------|------------|
-| `userData` | `~/Library/Application Support/<app-name>` |
-| `documents` | `~/Documents` |
-| `downloads` | `~/Downloads` |
-| `desktop` | `~/Desktop` |
-| `temp` | `/tmp` |
-| `appRoot` | Root directory of the app (next to `keystone.json`) |
+```typescript
+type AppPaths = {
+  data: string;       // ~/Library/Application Support/<app-name>
+  documents: string;  // ~/Documents
+  downloads: string;  // ~/Downloads
+  desktop: string;    // ~/Desktop
+  temp: string;       // /tmp
+  root: string;       // app root directory (next to keystone.json)
+};
+
+const { data, downloads, root } = await app.paths();
+```
 
 ### `app.quit(): void`
 
@@ -222,19 +226,21 @@ if (clicked === 0) deleteFile();
 
 ---
 
-## `shell`
+## `external`
 
 ```typescript
-import { shell } from "@keystone/sdk/bridge";
+import { external } from "@keystone/sdk/bridge";
 ```
 
-### `shell.openExternal(url): void`
+Opens files and URLs outside the app — in whatever the OS considers the default handler.
 
-Opens a URL in the system default browser. Fire-and-forget. Any scheme the OS can handle works — `https://`, `mailto:`, `file://`, etc.
+### `external.url(url): void`
 
-### `shell.openPath(path): Promise<boolean>`
+Opens a URL outside the app. Fire-and-forget. Any scheme the OS can handle — `https://`, `mailto:`, `file://`, etc.
 
-Opens a file or directory with its default application. Returns `true` on success.
+### `external.path(path): Promise<boolean>`
+
+Opens a file or directory outside the app with its default application. Returns `true` on success.
 
 ---
 
@@ -312,10 +318,10 @@ await notification.show("Build complete", "Your app compiled in 2.3s");
 
 ---
 
-## `nativeTheme`
+## `darkMode`
 
 ```typescript
-import { nativeTheme } from "@keystone/sdk/bridge";
+import { darkMode } from "@keystone/sdk/bridge";
 ```
 
 System dark/light mode detection.
@@ -326,28 +332,28 @@ System dark/light mode detection.
 | Windows | Registry `AppsUseLightTheme` |
 | Linux | `gsettings get org.gnome.desktop.interface color-scheme` |
 
-### `nativeTheme.isDarkMode(): Promise<boolean>`
+### `darkMode.isDark(): Promise<boolean>`
 
-### `nativeTheme.onChange(callback): () => void`
+### `darkMode.onChange(callback): () => void`
 
 Fires immediately with the current value, then on every subsequent change. Returns an unsubscribe function.
 
 ```typescript
-const unsub = nativeTheme.onChange((dark) => {
+const unsub = darkMode.onChange((dark) => {
   document.documentElement.classList.toggle("dark", dark);
 });
 ```
 
 ---
 
-## `powerMonitor`
+## `battery`
 
 ```typescript
-import { powerMonitor, PowerStatus } from "@keystone/sdk/bridge";
+import { battery, BatteryStatus } from "@keystone/sdk/bridge";
 ```
 
 ```typescript
-type PowerStatus = {
+type BatteryStatus = {
   onBattery: boolean;
   batteryPercent: number; // 0–100, or -1 when unknown
 };
@@ -359,15 +365,15 @@ type PowerStatus = {
 | Windows | `GetSystemPowerStatus` |
 | Linux | `/sys/class/power_supply` |
 
-### `powerMonitor.getStatus(): Promise<PowerStatus>`
-### `powerMonitor.onChange(callback): () => void`
+### `battery.status(): Promise<BatteryStatus>`
+### `battery.onChange(callback): () => void`
 
 ---
 
-## `globalShortcut`
+## `hotkey`
 
 ```typescript
-import { globalShortcut } from "@keystone/sdk/bridge";
+import { hotkey } from "@keystone/sdk/bridge";
 ```
 
 Process-wide keyboard shortcuts that fire even when your windows don't have focus.
@@ -384,21 +390,21 @@ Supported keys: `A`–`Z`, `0`–`9`, `F1`–`F12`, `Enter`/`Return`, `Escape`/`
 | Windows | Win32 `RegisterHotKey` + `WM_HOTKEY` message thread |
 | Linux | Stub (Wayland GlobalShortcuts portal deferred) |
 
-### `globalShortcut.register(accelerator): Promise<boolean>`
+### `hotkey.register(accelerator): Promise<boolean>`
 
 Returns `true` if successful, `false` if already claimed or unsupported.
 
-### `globalShortcut.unregister(accelerator): Promise<void>`
+### `hotkey.unregister(accelerator): Promise<void>`
 
-### `globalShortcut.isRegistered(accelerator): Promise<boolean>`
+### `hotkey.isRegistered(accelerator): Promise<boolean>`
 
-### `globalShortcut.onFired(accelerator, callback): () => void`
+### `hotkey.on(accelerator, callback): () => void`
 
 Must call `register()` first. Returns an unsubscribe function.
 
 ```typescript
-await globalShortcut.register("CommandOrControl+Shift+P");
-const unsub = globalShortcut.onFired("CommandOrControl+Shift+P", () => {
+await hotkey.register("CommandOrControl+Shift+P");
+const unsub = hotkey.on("CommandOrControl+Shift+P", () => {
   openCommandPalette();
 });
 ```
@@ -556,4 +562,4 @@ These action strings are handled directly by the C# runtime — no registration 
 | `window:maximize` | Maximize current window |
 | `window:close` | Close current window |
 | `app:quit` | Quit the application |
-| `shell:openExternal:<url>` | Open URL in default browser |
+| `external:url:<url>` | Open URL in default browser |

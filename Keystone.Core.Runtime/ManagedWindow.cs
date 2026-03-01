@@ -724,6 +724,31 @@ public class ManagedWindow : IDisposable
     }
 
     /// <summary>
+    /// Web-only window path (renderless: true). Bypasses BuildScene/Flex/slot machinery.
+    /// Creates a full-window WebView loading the component URL directly from the Bun HTTP server.
+    /// </summary>
+    public void LoadWebComponent(string component, int port)
+    {
+        _nativeWindow!.CreateWebView(wv =>
+        {
+            try
+            {
+                wv.InjectScriptOnLoad($"window.__KEYSTONE_PORT__ = {port};");
+                wv.AddMessageHandler("keystone", msg => DispatchDirectMessage(msg));
+                wv.SetTransparentBackground();
+                wv.OnCrash = () => LoadWebComponent(component, port);
+                wv.LoadUrl($"http://127.0.0.1:{port}/{component}?windowId={Id}");
+                _hostWebView = wv;
+                Console.WriteLine($"[ManagedWindow] Web-only WebView loaded: {component} id={Id}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ManagedWindow] Web-only WebView failed: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>
     /// Called by IWebView.OnCrash when the WebKit content process terminates.
     /// Fires OnWebViewCrash (app-layer hook), then reloads after the configured delay.
     /// </summary>

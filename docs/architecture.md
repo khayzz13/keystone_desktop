@@ -1,6 +1,6 @@
 # Architecture & Getting Started
 
-> Last updated: 2026-02-26
+> Last updated: 2026-02-28
 
 ## Documentation
 
@@ -9,7 +9,7 @@
 | **Architecture & Getting Started** (this file) | Process model, IPC, getting started, project modes |
 | [Bun Layer](./bun-layer.md) | Web components, services, workers, host.ts |
 | [C# Layer](./csharp-layer.md) | ICorePlugin, plugin system, HTTP router, programmatic bootstrap |
-| [SDK Reference](./sdk-reference.md) | Bridge API, invoke/subscribe/action, dialog, shell, clipboard, theme |
+| [SDK Reference](./sdk-reference.md) | Bridge API, invoke/subscribe/action, dialog, external, clipboard, darkMode |
 | [Configuration](./configuration.md) | keystone.json, keystone.config.ts, window chrome, build & packaging |
 
 ---
@@ -109,7 +109,7 @@ The fastest path from TypeScript to C#. Uses the WebKit script message handler â
 ```typescript
 import { invoke, dialog } from "@keystone/sdk/bridge";
 
-// Built-in handlers: dialog:*, app:*, shell:*, window:*
+// Built-in handlers: dialog:*, app:*, external:*, window:*, darkMode:*, battery:*, hotkey:*
 const paths = await dialog.openFile({ multiple: true, filters: [".png", ".jpg"] });
 
 // Custom C# handlers registered with RegisterInvokeHandler
@@ -505,7 +505,7 @@ Keystone supports three compositions. All three run the same runtime.
 
 ### Web-only (default)
 
-TypeScript UI + Bun services. No C#. Covers the built-in `invoke()` API surface (`app:*`, `window:*`, `dialog:*`, `shell:*`). The `examples/docs-viewer` is a complete working example of this mode.
+TypeScript UI + Bun services. No C#. Covers the built-in `invoke()` API surface (`app:*`, `window:*`, `dialog:*`, `external:*`). The `examples/docs-viewer` is a complete working example of this mode.
 
 ```jsonc
 {

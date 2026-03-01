@@ -32,6 +32,8 @@ public class WebWindowPlugin : WindowPluginBase
 
     public override SceneNode? BuildScene(FrameState state)
     {
+        if (_cfg.Renderless) return null;
+
         _buttons.Clear();
         var w = state.Width;
         var h = state.Height;
