@@ -930,6 +930,11 @@ public class ManagedWindow : IDisposable
         _nativeWindow?.Dispose();
         (_plugin as IDisposable)?.Dispose();
         _paintCache?.Dispose();
+        OnDirectMessage = null;
+        OnWebViewCrash = null;
+        OnShowOverlay = null;
+        OnCloseOverlay = null;
+        OnTabDraggedOut = null;
     }
 
     // --- Window Delegate (nested, implements INativeWindowDelegate) ---

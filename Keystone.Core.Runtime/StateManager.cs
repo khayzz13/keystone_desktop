@@ -49,7 +49,7 @@ public class ConnectionState
 }
 
 // Service connection status
-public enum ServiceStatus { Disconnected, Connecting, Connected, Failed }
+public enum ServiceStatus { Disconnected, Connecting, Connected, Reconnecting, Failed }
 public record ServiceInfo(string Name, ServiceStatus Status, string? Error = null, Action? Reconnect = null);
 
 // Context menu state

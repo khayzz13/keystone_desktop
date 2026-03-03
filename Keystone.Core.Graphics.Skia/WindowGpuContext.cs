@@ -204,7 +204,7 @@ public class WindowGpuContext : IWindowGpuContext
         _grContext.Flush();
         _grContext.Submit(synchronous: true);
         _grContext.SetResourceCacheLimit(0);
-        _grContext.PurgeUnlockedResources(false);
+        _grContext.PurgeUnlockedResources(true);
         _grContext.Dispose();
         (_queue as IDisposable)?.Dispose();
     }

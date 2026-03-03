@@ -87,7 +87,7 @@ my-app/
 ```
 
 **`titleBarStyle`:** `"hidden"` = native traffic lights, web content full-bleed. `"toolkit"` = borderless, GPU title bar with close/min/float/tabs. `"toolkit-native"` = native traffic lights + GPU title bar with tabs/float (no close/min buttons). `"none"` = fully frameless.
-**`renderless: true`** — no Metal/Vulkan surface. All title bar styles are valid; GPU title bar components won't render without a GPU surface.
+**`renderless: true`** — web-only window. No Metal/Vulkan surface is allocated. The runtime bypasses the scene/layout system entirely and opens a WKWebView filling the content area, loading the component URL directly (`/{component}?windowId={id}`). This is the correct mode for any window whose entire content is a web component — no GPU rendering overhead, simpler lifecycle.
 **`headless: true`** — invisible window, never shown. Forces `renderless: true`. For background JS, PDF capture, test harnesses.
 
 ### `bun/keystone.config.ts`
@@ -434,6 +434,14 @@ public interface ICoreContext
 ### Custom Invoke Handlers
 
 Register on `ManagedWindow`. Runs on a **thread pool thread** — dispatch to main thread for platform UI APIs.
+
+For operations requiring synchronous main-thread execution (e.g. window drag), use `RegisterMainThreadInvokeHandler`:
+```csharp
+window.RegisterMainThreadInvokeHandler("window:startDrag", args => {
+    window.NativeWindow.StartDrag();
+    return null;
+});
+```
 
 ```csharp
 window.RegisterInvokeHandler("myapp:readFile", async args => {
@@ -842,9 +850,9 @@ All imports from `@keystone/sdk/bridge`. All `invoke()`-based — require WKWebV
 
 ```typescript
 import {
-  app, nativeWindow, dialog, shell,
-  clipboard, screen, notification, nativeTheme, powerMonitor,
-  globalShortcut, headless,
+  app, nativeWindow, dialog, external,
+  clipboard, screen, notification, darkMode, battery,
+  hotkey, headless,
   invoke, invokeBun, subscribe, action, query, keystone
 } from "@keystone/sdk/bridge";
 ```
@@ -862,8 +870,7 @@ keystone().send(type, data)    // raw WebSocket message (services receive via on
 
 ### `app`
 ```typescript
-await app.getPath("userData")     // ~/Library/Application Support/<id>
-await app.getPath("documents")    // also: downloads, desktop, temp, appRoot
+const { data, documents, downloads, desktop, temp, root } = await app.paths()
 await app.getName(); await app.getVersion()
 app.quit()
 ```
@@ -876,6 +883,7 @@ await nativeWindow.setFloating(true)
 await nativeWindow.getBounds()                  // { x, y, width, height }
 await nativeWindow.setBounds({ width: 1024 })   // partial — omitted fields unchanged
 await nativeWindow.center()
+nativeWindow.startDrag()                           // initiate native window drag from mousedown
 nativeWindow.minimize(); nativeWindow.maximize(); nativeWindow.close()
 ```
 
@@ -909,27 +917,33 @@ await notification.show("Build complete", "Compiled in 2.3s")
 // macOS: osascript | Linux: notify-send | Windows: MessageBox
 ```
 
-### `nativeTheme`
+### `external`
 ```typescript
-const dark = await nativeTheme.isDarkMode()
-const unsub = nativeTheme.onChange((dark) => document.documentElement.classList.toggle("dark", dark))
+external.url("https://example.com")        // open URL outside the app (default browser)
+await external.path("/path/to/file.pdf")   // open file/dir outside the app; returns true on success
 ```
 
-### `powerMonitor`
+### `darkMode`
 ```typescript
-type PowerStatus = { onBattery: boolean; batteryPercent: number }  // -1 = unknown
-const status = await powerMonitor.getStatus()
-const unsub = powerMonitor.onChange((s) => updateBatteryUI(s))
+const dark = await darkMode.isDark()
+const unsub = darkMode.onChange((dark) => document.documentElement.classList.toggle("dark", dark))
+```
+
+### `battery`
+```typescript
+type BatteryStatus = { onBattery: boolean; batteryPercent: number }  // -1 = unknown
+const status = await battery.status()
+const unsub = battery.onChange((s) => updateBatteryUI(s))
 // macOS: pmset | Windows: GetSystemPowerStatus | Linux: /sys/class/power_supply
 ```
 
-### `globalShortcut`
+### `hotkey`
 ```typescript
 // Modifiers: Control/Ctrl, Shift, Alt/Option, Meta/Command/Cmd, CommandOrControl
-const ok = await globalShortcut.register("CommandOrControl+Shift+P")  // false if taken
-await globalShortcut.isRegistered("CommandOrControl+Shift+P")
-const unsub = globalShortcut.onFired("CommandOrControl+Shift+P", openCommandPalette)
-await globalShortcut.unregister("CommandOrControl+Shift+P")
+const ok = await hotkey.register("CommandOrControl+Shift+P")  // false if taken
+await hotkey.isRegistered("CommandOrControl+Shift+P")
+const unsub = hotkey.on("CommandOrControl+Shift+P", openCommandPalette)
+await hotkey.unregister("CommandOrControl+Shift+P")
 // macOS: Carbon RegisterEventHotKey | Windows: Win32 RegisterHotKey+WM_HOTKEY thread | Linux: stub (false)
 ```
 
@@ -1071,9 +1085,49 @@ Four window chrome modes control the combination of native controls and GPU-rend
 | `"toolkit-native"` | Titled | Traffic lights / GTK decorations | Yes — tabs, float only (no close/min) |
 | `"none"` | Borderless | No | No |
 
-Any style can combine with `renderless: true`. GPU title bar components won't render without a GPU surface, but window style and native controls still apply.
+Any `titleBarStyle` can combine with `renderless: true`. The window chrome (traffic lights, rounded corners, drag region) still works; the GPU title bar components are simply absent.
 
 **`"toolkit-native"` is for windows that want both native window management (traffic lights, rounded corners, OS window snapping) and the GPU title bar (tabs, float toggle).** The title bar is 52px tall, with a 58px left spacer to clear macOS traffic lights. Close and minimize are handled by the native controls — the GPU bar only renders tabs and the float toggle.
+
+---
+
+## Window Modes — Native vs Web-Only
+
+Keystone has two distinct window rendering paths, chosen by `renderless`:
+
+### Native / Hybrid (`renderless: false`, default)
+
+```
+NSWindow + Metal layer
+  → Skia render thread (vsync)
+  → BuildScene / IWindowPlugin.Render()
+  → Flex layout engine
+  → Flex.Web("component") nodes → __addSlot() → WebKit slots overlaid on GPU canvas
+```
+
+Use this for windows with GPU-rendered content: charts, canvases, custom UI drawn with Skia. Web components can be embedded as slots within the Skia layout via `Flex.Web()`. All native IWindowPlugin/ILogicPlugin code runs here.
+
+### Web-Only (`renderless: true`)
+
+```
+NSWindow (no Metal layer)
+  → WKWebView fills content area
+  → http://localhost:{port}/{component}?windowId={id}
+  → generateShell HTML → imports component JS → mount(root, ctx)
+```
+
+Use this for windows whose entire content is a web component (React, Vue, vanilla JS, etc.). Zero GPU overhead. The `BuildScene()` / `Flex.Web()` / `__addSlot` machinery is bypassed entirely. The component loads directly — same WebSocket bridge, same `invoke`/`subscribe`/`invokeBun` API, same hot-reload.
+
+**Config pattern:**
+```jsonc
+// Web-only window — pure WebKit, no GPU
+{ "component": "news", "title": "News", "width": 600, "height": 760, "renderless": true }
+
+// Native window — GPU/Skia with optional embedded web slots
+{ "component": "chart", "title": "Chart", "width": 900, "height": 700, "titleBarStyle": "toolkit-native" }
+```
+
+The web component code (`mount`/`unmount`, SDK bridge usage) is identical in both modes.
 
 ---
 
@@ -1083,10 +1137,10 @@ Any style can combine with `renderless: true`. GPU title bar components won't re
 - **Thread safety in invoke handlers** — handlers run on thread pool. Any AppKit/GTK platform UI APIs require `RunOnMainThread`.
 - **`invokeBun` vs `invoke`** — `invoke` → C# directly (fast, no Bun hop). `invokeBun` → Bun `.handle()` (over WebSocket). Use `invoke` for native OS APIs, `invokeBun` for business logic.
 - **`subscribe` replays last value** — new subscribers immediately get the last cached value. If your channel carries ephemeral events (not state snapshots), this can cause stale fires.
-- **`renderless: true`** is valid with all `titleBarStyle` values — the window chrome style applies but GPU title bar components won't render without a GPU surface.
+- **`renderless: true`** means the window loads a WebView directly — no Skia, no `BuildScene`, no `Flex.Web`. If your window needs GPU rendering (`IWindowPlugin.Render`, charts, custom drawing), don't use `renderless`. If the window is purely web content, `renderless: true` is the correct choice.
 - **`ICorePlugin` via `appAssembly` is NOT hot-reloaded** — only plugins discovered from `dylib/` hot-reload. Don't put your ICorePlugin in `dylib/` without `appAssembly` pointing to it.
 - **`IWindowPlugin` and `IServicePlugin` in `dylib/` DO hot-reload** — implement `IStatefulPlugin` or `IReloadableService` to preserve in-memory state across reloads.
-- **`globalShortcut` on Linux** — always returns false. Wayland GlobalShortcuts portal not implemented.
+- **`hotkey` on Linux** — always returns false. Wayland GlobalShortcuts portal not implemented.
 - **Service module JS variables** — wiped on hot-reload. Persist anything durable in `svc.store` (SQLite).
 - **`Private=false` on engine references** in plugin csproj — omitting this copies engine DLLs into plugin output and breaks ALC unloading.
 - **Plugin `Shutdown()` must clean up** — timers, watchers, subscriptions not disposed in `Shutdown()` persist as leaked references; the ALC won't be collected and hot-reload won't fully unload.

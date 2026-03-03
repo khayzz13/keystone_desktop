@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using AppKit;
 using CoreAnimation;
 using CoreGraphics;
@@ -16,6 +15,9 @@ public class MacOSPlatform : IPlatform
     private KeystoneAppDelegate? _appDelegate;
     private Func<IEnumerable<(string id, string title)>>? _windowListProvider;
 
+    public event Action? OnSystemWillSleep;
+    public event Action? OnSystemDidWake;
+
     public void Initialize()
     {
         NSApplication.Init();
@@ -23,6 +25,19 @@ public class MacOSPlatform : IPlatform
         app.ActivationPolicy = NSApplicationActivationPolicy.Regular;
         app.FinishLaunching();
         app.Activate();
+
+        // Subscribe to system sleep/wake notifications
+        var nc = NSWorkspace.SharedWorkspace.NotificationCenter;
+        nc.AddObserver(NSWorkspace.WillSleepNotification, _ =>
+        {
+            Console.WriteLine("[Platform] System will sleep");
+            OnSystemWillSleep?.Invoke();
+        });
+        nc.AddObserver(NSWorkspace.DidWakeNotification, _ =>
+        {
+            Console.WriteLine("[Platform] System did wake");
+            OnSystemDidWake?.Invoke();
+        });
     }
 
     public void Quit() => NSApplication.SharedApplication.Terminate(null);
@@ -101,7 +116,9 @@ public class MacOSPlatform : IPlatform
                 if (opts.Title != null) panel.Message = opts.Title;
                 panel.AllowsMultipleSelection = opts.Multiple;
                 if (opts.FileExtensions is { Length: > 0 })
-                    panel.AllowedFileTypes = opts.FileExtensions;
+                    panel.AllowedContentTypes = opts.FileExtensions
+                        .Select(e => UniformTypeIdentifiers.UTType.CreateFromExtension(e))
+                        .Where(t => t != null).ToArray()!;
 
                 var response = (int)panel.RunModal();
                 if (response == (int)NSModalResponse.OK)
@@ -170,7 +187,7 @@ public class MacOSPlatform : IPlatform
         => NSWorkspace.SharedWorkspace.OpenUrl(new NSUrl(url));
 
     public void OpenPath(string path)
-        => NSWorkspace.SharedWorkspace.OpenFile(path);
+        => NSWorkspace.SharedWorkspace.OpenUrl(NSUrl.FromFilename(path));
 
     // ── Clipboard ──────────────────────────────────────────────────────────────
 
@@ -219,6 +236,23 @@ public class MacOSPlatform : IPlatform
             return new PowerStatus(onBattery, m.Success ? int.Parse(m.Groups[1].Value) : -1);
         }
         catch { return new PowerStatus(false, -1); }
+    }
+
+    public object? BeginPreventSleep(string reason)
+    {
+        var token = NSProcessInfo.ProcessInfo.BeginActivity(
+            NSActivityOptions.UserInitiated | NSActivityOptions.IdleSystemSleepDisabled, reason);
+        Console.WriteLine($"[Platform] Sleep prevention active: {reason}");
+        return token;
+    }
+
+    public void EndPreventSleep(object? token)
+    {
+        if (token is NSObject activity)
+        {
+            NSProcessInfo.ProcessInfo.EndActivity(activity);
+            Console.WriteLine("[Platform] Sleep prevention released");
+        }
     }
 
     // ── Notifications ──────────────────────────────────────────────────────────

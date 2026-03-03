@@ -1,6 +1,6 @@
 # SDK Reference
 
-> Last updated: 2026-02-28
+> Last updated: 2026-03-01
 
 The `@keystone/sdk/bridge` module is the client-side bridge between your web components (running in WKWebView) and the C# + Bun host process. It gives you typed access to native OS APIs, pub/sub channels, service queries, and lifecycle hooks.
 
@@ -156,6 +156,18 @@ All fields optional — omitted fields keep current value.
 ```typescript
 await nativeWindow.setBounds({ width: 1024, height: 768 });
 ```
+
+### `nativeWindow.startDrag(): void`
+
+Initiate a native window drag from the current mouse position. Call this from a `mousedown` handler on your custom title bar or drag region. Fire-and-forget — the OS takes over drag tracking until the user releases the mouse button.
+
+```typescript
+titleBar.addEventListener("mousedown", () => {
+    nativeWindow.startDrag();
+});
+```
+
+Uses `RegisterMainThreadInvokeHandler` internally — the drag must begin synchronously during the current event's run loop iteration.
 
 ### `nativeWindow.center(): Promise<void>`
 

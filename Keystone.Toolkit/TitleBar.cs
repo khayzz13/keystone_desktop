@@ -45,7 +45,7 @@ public static class TitleBar
         // Native controls (traffic lights) — add spacer to clear them, skip GPU buttons
         if (state.HasNativeControls)
         {
-            row.Child(new FlexNode { Width = 58 });
+            row.Child(new FlexNode { Width = 72 * state.ScaleFactor });
         }
         else
         {

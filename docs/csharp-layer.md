@@ -1,6 +1,6 @@
 # C# Layer
 
-> Last updated: 2026-02-28
+> Last updated: 2026-03-01
 
 The C# host is Keystone's main process — the equivalent of Electron's main process, written in C#. You get the full .NET 10 standard library, direct P/Invoke to platform frameworks (AppKit/Metal on macOS, GTK4/Vulkan on Linux), and native threads with real memory ownership.
 
@@ -158,6 +158,20 @@ window.RegisterInvokeHandler("myapp:pickColor", args =>
     return tcs.Task;
 });
 ```
+
+### Main-Thread Invoke Handlers
+
+For operations that must execute synchronously on the main thread and return before the JS caller continues (e.g. window drag initiation), use `RegisterMainThreadInvokeHandler`. The handler runs inline on the main thread — no thread pool dispatch, no `TaskCompletionSource` needed.
+
+```csharp
+window.RegisterMainThreadInvokeHandler("window:startDrag", args =>
+{
+    window.NativeWindow.StartDrag();
+    return null;
+});
+```
+
+Use this sparingly — it blocks the main thread until the handler returns. Only appropriate for operations that require synchronous main-thread execution to function correctly (e.g. `performWindowDrag:` must be called during the current event's run loop iteration).
 
 ---
 

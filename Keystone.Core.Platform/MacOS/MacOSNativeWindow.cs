@@ -3,7 +3,6 @@ using CoreAnimation;
 using CoreGraphics;
 using Foundation;
 using ObjCRuntime;
-using WebKit;
 
 namespace Keystone.Core.Platform.MacOS;
 
@@ -12,10 +11,8 @@ public class MacOSNativeWindow : INativeWindow
     private readonly NSWindow _nsWindow;
     private readonly NSView _contentView;
     private readonly CAMetalLayer? _metalLayer;
+    private NSView? _metalView;
     private KeystoneWindowDelegate? _delegate;
-
-    // Shared across all windows — preserves current behavior
-    private static WKProcessPool? _sharedPool;
 
     // Cached values for thread-safe reads
     private double _cachedScale;
@@ -117,8 +114,7 @@ public class MacOSNativeWindow : INativeWindow
     {
         NSApplication.SharedApplication.InvokeOnMainThread(() =>
         {
-            _sharedPool ??= new WKProcessPool();
-            var wv = new MacOSWebView(_contentView, _sharedPool);
+            var wv = new MacOSWebView(_contentView);
             callback(wv);
         });
     }
@@ -127,7 +123,16 @@ public class MacOSNativeWindow : INativeWindow
 
     public void Dispose()
     {
+        _nsWindow.WeakDelegate = null;
         _delegate = null;
+
+        if (_metalView != null)
+        {
+            if (_metalLayer != null)
+                _metalLayer.DrawableSize = new CGSize(0, 0);
+            _metalView.RemoveFromSuperview();
+            _metalView = null;
+        }
     }
 
     // --- Internal for dock menu ---
@@ -135,7 +140,7 @@ public class MacOSNativeWindow : INativeWindow
 
     // --- Metal layer creation (moved from NativeAppKit.MakeLayerBacked) ---
 
-    private static CAMetalLayer CreateMetalLayer(NSView view)
+    private CAMetalLayer CreateMetalLayer(NSView view)
     {
         view.WantsLayer = true;
 
@@ -148,6 +153,7 @@ public class MacOSNativeWindow : INativeWindow
         var metalLayer = new CAMetalLayer();
         metalView.Layer = metalLayer;
         view.AddSubview(metalView);
+        _metalView = metalView;
 
         return metalLayer;
     }

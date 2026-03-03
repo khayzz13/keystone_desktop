@@ -416,7 +416,7 @@ public class DyLibLoader
                     {
                         Console.WriteLine($"[DyLibLoader] Reloading: {name}");
 
-                        // Cascade reload if this is a library, logic, or indicator plugin
+                        // Cascade reload if this is a library or logic plugin
                         var needsCascade = _hotReloadEnabled &&
                             (info.LibraryNames.Count > 0 || info.LogicNames.Count > 0);
 

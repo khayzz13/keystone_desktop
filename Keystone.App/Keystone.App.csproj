@@ -24,6 +24,7 @@
   <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'macos'">
     <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <ValidateXcodeVersion>false</ValidateXcodeVersion>
   </PropertyGroup>
 
   <!-- Common project references (all platforms) -->

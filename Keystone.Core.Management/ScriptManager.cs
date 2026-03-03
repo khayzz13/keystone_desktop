@@ -30,6 +30,9 @@ public class ScriptManager
     private FileSystemWatcher? _webWatcher;
 
     private static ScriptManager? _instance;
+    private static readonly List<string> _extraAssemblyNames = new();
+    private readonly List<CustomScriptHandler> _customHandlers = new();
+    private readonly List<FileSystemWatcher> _customWatchers = new();
 
     public ScriptManager(string dir, PluginRegistry registry, Keystone.Core.ScriptConfig? config = null)
     {
@@ -89,6 +92,71 @@ public class ScriptManager
         _watcher = null;
         _webWatcher?.Dispose();
         _webWatcher = null;
+        foreach (var w in _customWatchers) w.Dispose();
+        _customWatchers.Clear();
+    }
+
+    /// <summary>Register an additional assembly name to include in script compilation.
+    /// Call at startup so scripts can reference app-specific types.</summary>
+    public static void RegisterScriptAssembly(string name) => _extraAssemblyNames.Add(name);
+
+    // === Custom Script Types (mirrors DyLibLoader.RegisterCustomPluginType) ===
+
+    /// <summary>Register a custom script type for a subdirectory. Scripts are evaluated as T
+    /// and passed to onLoaded. Supports hot-reload. Dir can be a subdirectory name (resolved
+    /// relative to scripts/) or an absolute path.</summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Scripts require dynamic code")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072", Justification = "Scripts require dynamic code")]
+    public static void RegisterCustomScriptType<T>(string dir, Action<T> onLoaded, Action<string>? onUnloaded = null)
+    {
+        if (_instance == null) return;
+        var absDir = Path.IsPathRooted(dir) ? dir : Path.Combine(_instance._dir, dir);
+        if (!Directory.Exists(absDir)) { Console.WriteLine($"[ScriptManager] Custom script dir not found: {absDir}"); return; }
+
+        var handler = new CustomScriptHandler(typeof(T), absDir,
+            obj => onLoaded((T)obj),
+            onUnloaded);
+        _instance._customHandlers.Add(handler);
+
+        var opts = BuildFullScriptOptions();
+
+        foreach (var csx in Directory.GetFiles(absDir, "*.csx"))
+            handler.Load(csx, opts);
+
+        if (_instance._hotReload)
+        {
+            var watcher = new FileSystemWatcher(absDir, "*.csx")
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                EnableRaisingEvents = true
+            };
+            watcher.Changed += (s, e) => { Thread.Sleep(100); handler.Load(e.FullPath, opts); };
+            watcher.Created += (s, e) => { Thread.Sleep(100); handler.Load(e.FullPath, opts); };
+            watcher.Deleted += (s, e) => handler.Unload(e.FullPath);
+            _instance._customWatchers.Add(watcher);
+        }
+    }
+
+    private static ScriptOptions BuildFullScriptOptions()
+    {
+        var opts = ScriptOptions.Default
+            .AddReferences(typeof(RenderContext).Assembly)
+            .AddImports("System", "System.Collections.Generic", "System.Linq",
+                "Keystone.Core", "Keystone.Core.Plugins", "Keystone.Core.Rendering",
+                "Keystone.Core.Platform");
+
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            var name = asm.GetName().Name;
+            if (name == null || asm.IsDynamic || string.IsNullOrEmpty(asm.Location)) continue;
+            if (name.StartsWith("Keystone.") || _extraAssemblyNames.Contains(name))
+            {
+                opts = opts.AddReferences(asm);
+                opts = opts.AddImports(name);
+            }
+        }
+
+        return opts;
     }
 
     private void LoadScript(string path)
@@ -257,6 +325,59 @@ public class ScriptManager
         catch (Exception ex)
         {
             return JsonSerializer.Serialize(new { error = ex.Message });
+        }
+    }
+}
+
+class CustomScriptHandler
+{
+    private readonly Type _type;
+    private readonly string _dir;
+    private readonly Action<object> _onLoaded;
+    private readonly Action<string>? _onUnloaded;
+    private readonly Dictionary<string, string> _loaded = new(); // path -> name
+
+    public CustomScriptHandler(Type type, string dir, Action<object> onLoaded, Action<string>? onUnloaded)
+    {
+        _type = type;
+        _dir = dir;
+        _onLoaded = onLoaded;
+        _onUnloaded = onUnloaded;
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Scripts require dynamic code")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072", Justification = "Scripts require dynamic code")]
+    public void Load(string path, ScriptOptions opts)
+    {
+        var name = Path.GetFileNameWithoutExtension(path);
+        Unload(path);
+
+        try
+        {
+            var code = File.ReadAllText(path);
+            var result = CSharpScript.EvaluateAsync(code, opts).Result;
+            if (result != null && _type.IsAssignableFrom(result.GetType()))
+            {
+                _loaded[path] = name;
+                _onLoaded(result);
+                Console.WriteLine($"[ScriptManager] Loaded {_type.Name} script: {name}");
+            }
+            else
+                Console.WriteLine($"[ScriptManager] Script {name} did not return {_type.Name}");
+        }
+        catch (Exception ex)
+        {
+            var inner = ex is AggregateException ag ? ag.InnerException ?? ex : ex;
+            Console.WriteLine($"[ScriptManager] Failed to load {name}: {inner.Message}");
+        }
+    }
+
+    public void Unload(string path)
+    {
+        if (_loaded.TryGetValue(path, out var name))
+        {
+            _onUnloaded?.Invoke(name);
+            _loaded.Remove(path);
         }
     }
 }

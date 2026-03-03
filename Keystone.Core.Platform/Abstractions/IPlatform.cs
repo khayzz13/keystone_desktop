@@ -59,6 +59,16 @@ public interface IPlatform
     bool IsDarkMode();
     PowerStatus GetPowerStatus();
 
+    // ── Power management ──────────────────────────────────────────────────────
+    /// <summary>Prevent idle system sleep. Returns an opaque token to pass to EndPreventSleep.</summary>
+    object? BeginPreventSleep(string reason);
+    void EndPreventSleep(object? token);
+
+    /// <summary>Fired when the system is about to sleep (lid close, forced sleep).</summary>
+    event Action? OnSystemWillSleep;
+    /// <summary>Fired when the system wakes from sleep.</summary>
+    event Action? OnSystemDidWake;
+
     // ── Notifications ──────────────────────────────────────────────────────────
     Task ShowOsNotification(string title, string body);
 

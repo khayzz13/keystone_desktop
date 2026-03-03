@@ -60,6 +60,10 @@ public class ApplicationRuntime : ICoreContext
     public event Action? OnBeforeRun;
     public event Action? OnShutdown;
 
+    // System power events — forwarded from IPlatform
+    public event Action? OnSystemWillSleep;
+    public event Action? OnSystemDidWake;
+
     // Process lifecycle events — analogous to Electron's app.on('render-process-gone') etc.
     /// <summary>Fired when the Bun subprocess exits unexpectedly. Arg is the OS exit code.</summary>
     public event Action<int>? OnBunCrash;
@@ -81,6 +85,9 @@ public class ApplicationRuntime : ICoreContext
     {
         set => ActionRouter.OnUnhandledAction += value;
     }
+
+    object? ICoreContext.BeginPreventSleep(string reason) => _platform.BeginPreventSleep(reason);
+    void ICoreContext.EndPreventSleep(object? token) => _platform.EndPreventSleep(token);
 
     void ICoreContext.RegisterService<T>(T service) => ServiceLocator.Register(service);
     void ICoreContext.RegisterWindow(IWindowPlugin plugin) => _pluginRegistry.RegisterWindow(plugin);
@@ -108,6 +115,10 @@ public class ApplicationRuntime : ICoreContext
 #endif
         _actionRouter = new ActionRouter(_windowManager);
         _instance = this;
+
+        // Forward platform sleep/wake to runtime events
+        _platform.OnSystemWillSleep += () => OnSystemWillSleep?.Invoke();
+        _platform.OnSystemDidWake += () => OnSystemDidWake?.Invoke();
 
         // Wire Flex layout renderer
         Keystone.Core.UI.FlexNode.RenderImpl = FlexRenderer.Render;

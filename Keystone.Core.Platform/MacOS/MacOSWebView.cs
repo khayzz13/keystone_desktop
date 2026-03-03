@@ -12,11 +12,10 @@ public class MacOSWebView : IWebView
 
     public Action? OnCrash { get; set; }
 
-    internal MacOSWebView(NSView contentView, WKProcessPool pool)
+    internal MacOSWebView(NSView contentView)
     {
         var config = new WKWebViewConfiguration
         {
-            ProcessPool = pool,
             ApplicationNameForUserAgent = "Keystone"
         };
 

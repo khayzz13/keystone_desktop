@@ -4,7 +4,7 @@ using System;
 
 namespace Keystone.Core.Management;
 
-public enum PluginType { Window, Service, Logic, Library, Core, Indicator }
+public enum PluginType { Window, Service, Logic, Library, Core }
 
 public class PluginCacheCoordinator
 {
@@ -15,7 +15,6 @@ public class PluginCacheCoordinator
     public event Action<string>? OnLogicPluginReloaded;
     public event Action<string>? OnLibraryPluginReloaded;
     public event Action<string>? OnCorePluginReloaded;
-    public event Action<string>? OnIndicatorPluginReloaded;
 
     public event Action<string>? OnWindowPluginUnloading;
     public event Action<string>? OnServicePluginUnloading;
@@ -39,9 +38,6 @@ public class PluginCacheCoordinator
                 break;
             case PluginType.Core:
                 OnCorePluginReloaded?.Invoke(name);
-                break;
-            case PluginType.Indicator:
-                OnIndicatorPluginReloaded?.Invoke(name);
                 break;
         }
     }

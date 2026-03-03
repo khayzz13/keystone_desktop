@@ -1,6 +1,6 @@
 # Architecture & Getting Started
 
-> Last updated: 2026-02-28
+> Last updated: 2026-03-01
 
 ## Documentation
 
@@ -84,7 +84,7 @@ Workers are suited for parallelism and extension isolation — similar to what a
 
 When a window needs to show a web component, a WebKit view is created (WKWebView on macOS, WebKitGTK on Linux) and the OS-managed WebKit process spawns automatically. This is the process that actually renders the HTML/CSS/JS.
 
-On macOS, one shared content process services all WKWebView slots in a window via the shared `WKProcessPool`.
+On macOS 26+, the OS manages WebKit content process sharing automatically — all WKWebView slots in a window share a content process without manual configuration.
 
 ---
 
@@ -324,6 +324,30 @@ context.OnWebViewCrash += windowId => {
 
 ---
 
+## Memory Management
+
+### Per-Window GPU Resources
+
+Each non-renderless window allocates a CAMetalLayer (macOS) or Vulkan swap chain (Linux) with its own drawable pool. On macOS, the layer maintains 3 drawables × 4 bytes × width × height — a 1440p Retina window holds ~60 MB in IOSurface-backed textures.
+
+When a window closes, `MacOSNativeWindow.Dispose()` resets `CAMetalLayer.DrawableSize` to `(0, 0)` before removing the metal view from the view hierarchy. This forces the layer to release its IOSurface pool immediately rather than waiting for garbage collection.
+
+`WindowGpuContext.Dispose()` performs a full GPU resource purge:
+
+```csharp
+_grContext.Flush();
+_grContext.Submit(synchronous: true);
+_grContext.SetResourceCacheLimit(0);
+_grContext.PurgeUnlockedResources(scratchResourcesOnly: true);
+_grContext.Dispose();
+```
+
+### ManagedWindow Cleanup
+
+`ManagedWindow.Dispose()` nulls all public `Action` delegates (`OnDirectMessage`, `OnWebViewCrash`, `OnShowOverlay`, `OnCloseOverlay`, `OnTabDraggedOut`) to break reference chains that would otherwise prevent GC from collecting the window and its plugin graph.
+
+---
+
 ## Framework Landscape
 
 There are several frameworks in this space. Here's how they compare on the dimensions that matter structurally, followed by honest numbers. It should be noted that Keystone Desktop is in early stages and not intended for production use cases in current form. 
@@ -440,6 +464,7 @@ Common flags:
 | `--package` | Produce a `.app` bundle in `dist/` after building |
 | `--bundle` | With `--package`: copy `dylib/` into the bundle (self-contained) |
 | `--allow-external` | Allow plugins not signed by this app (disables library validation) |
+| `--no-plugins` | Skip building C# plugins (only build and run the engine) |
 | `--debug` | Debug configuration |
 | `--clean` | Remove `bin/`/`obj/` before building |
 

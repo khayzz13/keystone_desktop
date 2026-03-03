@@ -1,6 +1,6 @@
 # Configuration, Window Chrome & Build
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-01
 
 Keystone uses two configuration files with different responsibilities:
 
@@ -551,6 +551,18 @@ dist/MyApp.app/Contents/
     "allowExternalSignatures": true
   }
 }
+```
+
+### Xcode Version Compatibility
+
+The .NET macOS SDK validates the installed Xcode version at build time. When a newer Xcode is installed (e.g. 26.3) but the .NET SDK targets an older version (e.g. 26.2), the build fails. To bypass this check, add `<ValidateXcodeVersion>false</ValidateXcodeVersion>` to the macOS property group in the app `.csproj`:
+
+```xml
+<PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'macos'">
+    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <ValidateXcodeVersion>false</ValidateXcodeVersion>
+</PropertyGroup>
 ```
 
 ### Entitlements (macOS)
