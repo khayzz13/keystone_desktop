@@ -13,6 +13,7 @@ public class DisplayLink : IDisplayLink
     CADisplayLink? _displayLink;
     readonly DisplayLinkTarget _target;
     readonly SemaphoreSlim _vsyncSignal = new(0, 1);
+    long _lastVsyncTick;
     bool _disposed;
 
     // Dedicated thread + run loop for CADisplayLink (fires callback off main thread)
@@ -80,6 +81,8 @@ public class DisplayLink : IDisplayLink
 
     void OnVsync()
     {
+        _lastVsyncTick = Environment.TickCount64;
+
         // Signal main thread
         if (_vsyncSignal.CurrentCount == 0)
             _vsyncSignal.Release();
@@ -91,6 +94,19 @@ public class DisplayLink : IDisplayLink
                 try { _subscribers[i].Set(); }
                 catch (ObjectDisposedException) { }
         }
+    }
+
+    /// <summary>Restart CADisplayLink if it stopped firing (e.g. after sleep/wake).</summary>
+    public void EnsureRunning()
+    {
+        if (_disposed || _runLoop == null) return;
+        if (Environment.TickCount64 - _lastVsyncTick < 100) return;
+
+        Console.WriteLine("[DisplayLink] Restarting — no VSync for >100ms");
+        _displayLink?.RemoveFromRunLoop(_runLoop, NSRunLoopMode.Common);
+        _displayLink?.Invalidate();
+        _displayLink = CADisplayLink.Create(_target, new Selector("onDisplayLink:"));
+        _displayLink.AddToRunLoop(_runLoop, NSRunLoopMode.Common);
     }
 
     public void Dispose()

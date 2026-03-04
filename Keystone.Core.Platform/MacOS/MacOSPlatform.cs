@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net.Sockets;
+using System.Text;
 using AppKit;
 using CoreAnimation;
 using CoreGraphics;
@@ -14,9 +16,14 @@ public class MacOSPlatform : IPlatform
 {
     private KeystoneAppDelegate? _appDelegate;
     private Func<IEnumerable<(string id, string title)>>? _windowListProvider;
+    private Socket? _singleInstanceSocket;
+    private string? _singleInstanceSocketPath;
 
     public event Action? OnSystemWillSleep;
     public event Action? OnSystemDidWake;
+    public event Action<string[], string>? OnSecondInstance;
+    public event Action<string[]>? OnOpenUrls;
+    public event Action<string>? OnOpenFile;
 
     public void Initialize()
     {
@@ -40,7 +47,16 @@ public class MacOSPlatform : IPlatform
         });
     }
 
-    public void Quit() => NSApplication.SharedApplication.Terminate(null);
+    public void Quit()
+    {
+        try { _singleInstanceSocket?.Close(); } catch { }
+        if (_singleInstanceSocketPath != null)
+        {
+            try { File.Delete(_singleInstanceSocketPath); } catch { }
+            _singleInstanceSocketPath = null;
+        }
+        NSApplication.SharedApplication.Terminate(null);
+    }
 
     public void PumpRunLoop(double seconds = 0.01)
         => NSRunLoop.Current.RunUntil(NSDate.FromTimeIntervalSinceNow(seconds));
@@ -96,7 +112,20 @@ public class MacOSPlatform : IPlatform
             nsWindow.Level = NSWindowLevel.Floating;
         }
 
-        return new MacOSNativeWindow(nsWindow, config.Renderless);
+        var nw = new MacOSNativeWindow(nsWindow, config.Renderless);
+
+        if (config.MinWidth.HasValue || config.MinHeight.HasValue)
+            nw.SetMinSize(config.MinWidth ?? 0, config.MinHeight ?? 0);
+        if (config.MaxWidth.HasValue || config.MaxHeight.HasValue)
+            nw.SetMaxSize(config.MaxWidth ?? double.MaxValue, config.MaxHeight ?? double.MaxValue);
+        if (config.AspectRatio.HasValue)
+            nw.SetAspectRatio(config.AspectRatio.Value);
+        if (config.Opacity.HasValue)
+            nw.SetOpacity(config.Opacity.Value);
+        if (!config.Resizable)
+            nw.SetResizable(false);
+
+        return nw;
     }
 
     public INativeWindow CreateOverlayWindow(WindowConfig config)
@@ -296,9 +325,102 @@ public class MacOSPlatform : IPlatform
         _appDelegate = new KeystoneAppDelegate
         {
             OnDockClick = onDockClick,
-            GetWindowTitles = _windowListProvider
+            GetWindowTitles = _windowListProvider,
+            OnOpenUrlsCallback = urls => OnOpenUrls?.Invoke(urls),
+            OnOpenFileCallback = path => OnOpenFile?.Invoke(path),
         };
         NSApplication.SharedApplication.Delegate = _appDelegate;
+    }
+
+    // ── Single instance ─────────────────────────────────────────────────
+
+    public bool TryAcquireSingleInstanceLock(string appId)
+    {
+        var socketPath = Path.Combine(Path.GetTempPath(), $"{appId}.sock");
+        _singleInstanceSocketPath = socketPath;
+
+        // Clean up stale socket if no one is listening
+        if (File.Exists(socketPath))
+        {
+            try
+            {
+                using var probe = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+                probe.Connect(new UnixDomainSocketEndPoint(socketPath));
+                // Connection succeeded — another instance owns it. Forward argv + cwd then return false.
+                var payload = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    argv = Environment.GetCommandLineArgs(),
+                    cwd = Environment.CurrentDirectory
+                });
+                probe.Send(Encoding.UTF8.GetBytes(payload));
+                probe.Shutdown(SocketShutdown.Both);
+                return false;
+            }
+            catch
+            {
+                // Dead socket — remove and claim
+                try { File.Delete(socketPath); } catch { }
+            }
+        }
+
+        var server = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        server.Bind(new UnixDomainSocketEndPoint(socketPath));
+        server.Listen(4);
+        _singleInstanceSocket = server;
+
+        // Accept connections on a background thread
+        Task.Run(async () =>
+        {
+            while (true)
+            {
+                Socket client;
+                try { client = await server.AcceptAsync(); }
+                catch { break; } // Socket closed → shutting down
+
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        var buf = new byte[8192];
+                        int n = client.Receive(buf);
+                        client.Close();
+
+                        var json = Encoding.UTF8.GetString(buf, 0, n);
+                        using var doc = System.Text.Json.JsonDocument.Parse(json);
+                        var argv = doc.RootElement.GetProperty("argv")
+                            .EnumerateArray().Select(e => e.GetString() ?? "").ToArray();
+                        var cwd = doc.RootElement.GetProperty("cwd").GetString() ?? "";
+                        OnSecondInstance?.Invoke(argv, cwd);
+                    }
+                    catch { }
+                });
+            }
+        });
+
+        return true;
+    }
+
+    // ── Protocol registration ────────────────────────────────────────────
+
+    public bool SetAsDefaultProtocolClient(string scheme)
+    {
+        var bundleUrl = NSBundle.MainBundle.BundleUrl;
+        if (bundleUrl == null) return false;
+        var tcs = new TaskCompletionSource<bool>();
+        NSWorkspace.SharedWorkspace.SetDefaultApplicationToOpenUrls(bundleUrl, scheme, err =>
+            tcs.SetResult(err == null));
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    public bool RemoveAsDefaultProtocolClient(string scheme) => false;
+
+    public bool IsDefaultProtocolClient(string scheme)
+    {
+        var bundleUrl = NSBundle.MainBundle.BundleUrl;
+        if (bundleUrl == null) return false;
+        var handlerUrl = NSWorkspace.SharedWorkspace.UrlForApplication(new NSUrl($"{scheme}://"));
+        if (handlerUrl == null) return false;
+        return handlerUrl.Path == bundleUrl.Path;
     }
 
     // === Metal layer configuration (called from ManagedWindow GPU path) ===
@@ -366,10 +488,24 @@ internal class KeystoneAppDelegate : NSApplicationDelegate
 {
     public Action? OnDockClick { get; set; }
     public Func<IEnumerable<(string id, string title)>>? GetWindowTitles { get; set; }
+    public Action<string[]>? OnOpenUrlsCallback { get; set; }
+    public Action<string>? OnOpenFileCallback { get; set; }
 
     public override bool ApplicationShouldHandleReopen(NSApplication sender, bool hasVisibleWindows)
     {
         OnDockClick?.Invoke();
+        return true;
+    }
+
+    public override void OpenUrls(NSApplication application, NSUrl[] urls)
+    {
+        var strings = urls.Select(u => u.AbsoluteString ?? "").Where(s => s.Length > 0).ToArray();
+        if (strings.Length > 0) OnOpenUrlsCallback?.Invoke(strings);
+    }
+
+    public override bool OpenFile(NSApplication sender, string filename)
+    {
+        OnOpenFileCallback?.Invoke(filename);
         return true;
     }
 
@@ -383,7 +519,6 @@ internal class KeystoneAppDelegate : NSApplicationDelegate
         {
             var item = new NSMenuItem(title, (s, e) =>
             {
-                // Bring all windows to front when dock menu item is clicked
                 foreach (var w in NSApplication.SharedApplication.DangerousWindows)
                     w.OrderFront(null);
             });

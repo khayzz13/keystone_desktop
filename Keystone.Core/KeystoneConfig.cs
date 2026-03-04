@@ -413,6 +413,32 @@ public class WindowConfig
     /// </summary>
     [JsonPropertyName("docked")]
     public string? Docked { get; set; }
+
+    // ── Window semantics ──────────────────────────────────────────────────
+
+    [JsonPropertyName("minWidth")]
+    public float? MinWidth { get; set; }
+
+    [JsonPropertyName("minHeight")]
+    public float? MinHeight { get; set; }
+
+    [JsonPropertyName("maxWidth")]
+    public float? MaxWidth { get; set; }
+
+    [JsonPropertyName("maxHeight")]
+    public float? MaxHeight { get; set; }
+
+    [JsonPropertyName("aspectRatio")]
+    public float? AspectRatio { get; set; }
+
+    [JsonPropertyName("opacity")]
+    public float? Opacity { get; set; }
+
+    [JsonPropertyName("fullscreen")]
+    public bool Fullscreen { get; set; } = false;
+
+    [JsonPropertyName("resizable")]
+    public bool Resizable { get; set; } = true;
 }
 
 public class ToolbarConfig

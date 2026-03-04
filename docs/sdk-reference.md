@@ -1,6 +1,6 @@
 # SDK Reference
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-03
 
 The `@keystone/sdk/bridge` module is the client-side bridge between your web components (running in WKWebView) and the C# + Bun host process. It gives you typed access to native OS APIs, pub/sub channels, service queries, and lifecycle hooks.
 
@@ -113,6 +113,53 @@ const { data, downloads, root } = await app.paths();
 
 Terminates the application. Triggers `ICorePlugin.OnShutdown` before exit.
 
+### `app.onOpenUrl(callback): () => void`
+
+Subscribe to URLs opened by the OS (custom protocol handlers, etc.). Fires when the app is activated via a registered URL scheme. Returns an unsubscribe function.
+
+```typescript
+const unsub = app.onOpenUrl((url) => {
+  console.log("Opened URL:", url); // e.g. "myapp://settings/theme"
+});
+```
+
+### `app.onOpenFile(callback): () => void`
+
+Subscribe to file-open events from the OS (double-click, drag-to-dock). Returns an unsubscribe function.
+
+```typescript
+const unsub = app.onOpenFile((path) => {
+  console.log("Opened file:", path);
+});
+```
+
+### `app.onSecondInstance(callback): () => void`
+
+Subscribe to second-instance launch events. When another instance of the app is launched, it forwards its argv and working directory to the running instance, then exits. Returns an unsubscribe function.
+
+```typescript
+const unsub = app.onSecondInstance((argv, cwd) => {
+  console.log("Second instance launched:", argv, "from", cwd);
+});
+```
+
+### `app.setAsDefaultProtocolClient(scheme): Promise<boolean>`
+
+Register this app as the default handler for a URL scheme. Returns `true` on success.
+
+```typescript
+await app.setAsDefaultProtocolClient("myapp");
+// Now opening "myapp://..." in the browser will activate this app
+```
+
+### `app.removeAsDefaultProtocolClient(scheme): Promise<boolean>`
+
+Unregister this app as the default handler for a URL scheme.
+
+### `app.isDefaultProtocolClient(scheme): Promise<boolean>`
+
+Check if this app is the default handler for a URL scheme.
+
 ---
 
 ## `nativeWindow`
@@ -133,12 +180,15 @@ await nativeWindow.setTitle("My App — Untitled");
 
 Fire-and-forget window controls.
 
-### `nativeWindow.open(type): Promise<string>`
+### `nativeWindow.open(type, opts?): Promise<string>`
 
 Spawns a new window of the given registered type. Returns the new window's ID. `type` must match a component in `keystone.json` `windows[]` or a native `IWindowPlugin.WindowType`.
 
 ```typescript
 const settingsWindowId = await nativeWindow.open("settings");
+
+// Open as child of current window
+const childId = await nativeWindow.open("details", { parent: nativeWindow.getId() });
 ```
 
 ### `nativeWindow.setFloating(floating): Promise<void>`
@@ -172,6 +222,130 @@ Uses `RegisterMainThreadInvokeHandler` internally — the drag must begin synchr
 ### `nativeWindow.center(): Promise<void>`
 
 Center the window on the main display.
+
+### Identity
+
+#### `nativeWindow.getId(): string`
+
+Returns the window ID synchronously (read from the slot context — no round-trip).
+
+#### `nativeWindow.getTitle(): Promise<string>`
+
+#### `nativeWindow.getParentId(): Promise<string | null>`
+
+Returns the parent window's ID, or `null` for top-level windows.
+
+### State Queries
+
+#### `nativeWindow.isFullscreen(): Promise<boolean>`
+#### `nativeWindow.isMinimized(): Promise<boolean>`
+#### `nativeWindow.isFocused(): Promise<boolean>`
+
+### Fullscreen
+
+#### `nativeWindow.enterFullscreen(): Promise<void>`
+#### `nativeWindow.exitFullscreen(): Promise<void>`
+
+```typescript
+await nativeWindow.enterFullscreen();
+// ... later
+await nativeWindow.exitFullscreen();
+```
+
+### Constraints & Appearance
+
+#### `nativeWindow.setMinSize(width, height): Promise<void>`
+#### `nativeWindow.setMaxSize(width, height): Promise<void>`
+
+```typescript
+await nativeWindow.setMinSize(400, 300);
+await nativeWindow.setMaxSize(1920, 1080);
+```
+
+#### `nativeWindow.setAspectRatio(ratio): Promise<void>`
+
+Lock the window's aspect ratio. Pass `0` to clear.
+
+```typescript
+await nativeWindow.setAspectRatio(16/9);
+```
+
+#### `nativeWindow.setOpacity(opacity): Promise<void>`
+
+Set window opacity (`0.0` fully transparent, `1.0` fully opaque).
+
+```typescript
+await nativeWindow.setOpacity(0.85);
+```
+
+#### `nativeWindow.setResizable(resizable): Promise<void>`
+
+#### `nativeWindow.setContentProtection(enabled): Promise<void>`
+
+Prevent screen capture / screenshots of this window's content.
+
+#### `nativeWindow.setIgnoreMouseEvents(ignore): Promise<void>`
+
+Make the window transparent to mouse events (click-through). Useful for overlay windows.
+
+### Visibility
+
+#### `nativeWindow.focus(): Promise<void>`
+#### `nativeWindow.hide(): Promise<void>`
+#### `nativeWindow.show(): Promise<void>`
+
+### Window Events
+
+#### `nativeWindow.on(event, callback): () => void`
+
+Subscribe to window lifecycle events. Returns an unsubscribe function.
+
+```typescript
+type WindowEvent =
+  | 'focus' | 'blur' | 'minimize' | 'restore'
+  | 'enter-full-screen' | 'leave-full-screen'
+  | 'moved' | 'resized';
+```
+
+```typescript
+const unsub = nativeWindow.on('resized', ({ width, height }) => {
+  console.log(`Window resized to ${width}x${height}`);
+});
+
+nativeWindow.on('focus', () => console.log('Window focused'));
+nativeWindow.on('blur', () => console.log('Window lost focus'));
+```
+
+Event data:
+- `moved`: `{ x: number, y: number }`
+- `resized`: `{ width: number, height: number }`
+- All others: no data
+
+---
+
+## `platform`
+
+```typescript
+import { platform } from "@keystone/sdk/bridge";
+```
+
+Platform detection and capability queries.
+
+### `platform.os: 'macos' | 'linux' | 'windows'`
+
+Current platform identifier. Read-only.
+
+### `platform.isSupported(feature): boolean`
+
+Check if a capability is available on the current platform.
+
+Available features: `fullscreen`, `opacity`, `minMaxSize`, `aspectRatio`, `contentProtection`, `clickThrough`, `singleInstance`, `protocolHandler`, `openFile`, `openUrl`, `parentChild`
+
+```typescript
+if (platform.isSupported('contentProtection')) {
+  await nativeWindow.setContentProtection(true);
+}
+```
 
 ---
 

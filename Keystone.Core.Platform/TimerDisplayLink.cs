@@ -60,6 +60,8 @@ public class TimerDisplayLink : IDisplayLink
         }
     }
 
+    public void EnsureRunning() { } // Timer-based — always running unless disposed
+
     public void Dispose()
     {
         if (_disposed) return;

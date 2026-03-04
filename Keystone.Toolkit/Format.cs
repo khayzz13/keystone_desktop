@@ -15,19 +15,19 @@ public static class Format
     }
 
     /// <summary>Format large numbers: 1234 -> "1.2K", 1234567 -> "1.2M"</summary>
-    public static string FormatVolume(long volume)
+    public static string FormatNumber(long value)
     {
-        if (volume >= 1_000_000_000) return $"{volume / 1_000_000_000.0:F1}B";
-        if (volume >= 1_000_000) return $"{volume / 1_000_000.0:F1}M";
-        if (volume >= 1_000) return $"{volume / 1_000.0:F1}K";
-        return volume.ToString();
+        if (value >= 1_000_000_000) return $"{value / 1_000_000_000.0:F1}B";
+        if (value >= 1_000_000) return $"{value / 1_000_000.0:F1}M";
+        if (value >= 1_000) return $"{value / 1_000.0:F1}K";
+        return value.ToString();
     }
 
     /// <summary>Format large numbers (int overload)</summary>
-    public static string FormatVolume(int volume) => FormatVolume((long)volume);
+    public static string FormatNumber(int value) => FormatNumber((long)value);
 
     /// <summary>Format large numbers (double overload)</summary>
-    public static string FormatVolume(double volume) => FormatVolume((long)volume);
+    public static string FormatNumber(double value) => FormatNumber((long)value);
 
     /// <summary>Format bytes as human-readable: "1.2 KB", "3.4 MB", "5.6 GB"</summary>
     public static string FormatBytes(long bytes)

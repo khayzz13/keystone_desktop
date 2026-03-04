@@ -646,13 +646,13 @@ When you drop a new DLL into `dylib/` or overwrite an existing one:
 ### Registering Custom Plugin Types
 
 ```csharp
-DyLibLoader.Instance?.RegisterCustomPluginType<IChartPlugin>(
-    onLoaded: plugin => ChartRegistry.Register(plugin),
-    onUnloaded: name => ChartRegistry.Unregister(name)
+DyLibLoader.Instance?.RegisterCustomPluginType<IEditorPlugin>(
+    onLoaded: plugin => EditorRegistry.Register(plugin),
+    onUnloaded: name => EditorRegistry.Unregister(name)
 );
 ```
 
-Any DLL in `dylib/` implementing `IChartPlugin` is then discovered, loaded, and hot-reloaded like built-in types.
+Any DLL in `dylib/` implementing `IEditorPlugin` is then discovered, loaded, and hot-reloaded like built-in types.
 
 ### Plugin Build Setup
 
@@ -776,12 +776,12 @@ app.Window("app", w => w
 ### Full Example — Mixed Web + Native
 
 ```csharp
-KeystoneApp.Create("Trading Platform", "com.example.trading")
+KeystoneApp.Create("My App", "com.example.myapp")
     .Window("dashboard", w => w.Title("Dashboard").Size(1400, 900))
     .Window("settings", w => w.Title("Settings").Size(600, 400).NoSpawn())
-    .Window<ChartWindow>()
-    .Window<OrderBookWindow>()
-    .Service<MarketDataService>()
+    .Window<EditorWindow>()
+    .Window<PreviewWindow>()
+    .Service<SyncService>()
     .WithBun()
     .WithPlugins()
     .Run();

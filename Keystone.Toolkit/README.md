@@ -127,11 +127,11 @@ var dropdown = Controls.Dropdown("USD", currencies, "set_currency",
 var presets = Controls.PresetRow(new[] { 1, 2, 5, 10 }, current: 5, "set_qty");
 
 // Large action button
-var buy = Controls.ActionButton("BUY", "AAPL", "buy", Theme.Success);
+var confirm = Controls.ActionButton("Confirm", "submit", "confirm", Theme.Success);
 
 // Text input
 var input = Controls.TextInput(textEntry, placeholder: "Search...");
-var labeled = Controls.LabeledInput("Symbol", textEntry, "e.g. AAPL");
+var labeled = Controls.LabeledInput("Name", textEntry, "e.g. My Project");
 ```
 
 ---
@@ -155,7 +155,7 @@ Buttons.Minimize(ctx, buttons, x, y, 24);
 Buttons.Toggle(ctx, buttons, x, y, 60, 28, "Auto", "toggle", isActive, 13f);
 
 // Tab
-Buttons.Tab(ctx, buttons, x, y, 28, "Chart", "tab:chart", isActive, 13f);
+Buttons.Tab(ctx, buttons, x, y, 28, "Settings", "tab:settings", isActive, 13f);
 
 // Menu item (dropdown row)
 Buttons.MenuItem(ctx, buttons, x, y, 160, 24, "Delete", "delete", selected: false, 12f);
@@ -219,11 +219,11 @@ Scrollable table with fixed header and builder pattern:
 
 ```csharp
 var table = DataTableFactory.Create(scrollState,
-    headers: new[] { "Symbol", "Price", "Change" },
-    widths:  new[] { 100f, 80f, 0f })  // 0 = flex-grow
-    .AddRow(new[] { "AAPL", "185.20", "+1.3%" },
+    headers: new[] { "Name", "Status", "Updated" },
+    widths:  new[] { 120f, 80f, 0f })  // 0 = flex-grow
+    .AddRow(new[] { "Web Server", "Running", "2m ago" },
             colors: new[] { Theme.TextPrimary, Theme.TextPrimary, Theme.Success })
-    .AddRow(new[] { "TSLA", "242.10", "-0.8%" },
+    .AddRow(new[] { "Database", "Stopped", "5h ago" },
             colors: new[] { Theme.TextPrimary, Theme.TextPrimary, Theme.Danger })
     .Build();
 ```
@@ -251,7 +251,7 @@ Stateless formatting utilities:
 
 ```csharp
 Format.FormatAge(TimeSpan.FromMinutes(45))   // "45m ago"
-Format.FormatVolume(1_500_000)                // "1.5M"
+Format.FormatNumber(1_500_000)                // "1.5M"
 Format.FormatBytes(3_500_000)                 // "3.3 MB"
 Format.FormatPercent(0.1234)                  // "12.34%"
 Format.FormatDuration(TimeSpan.FromSeconds(90)) // "1:30"

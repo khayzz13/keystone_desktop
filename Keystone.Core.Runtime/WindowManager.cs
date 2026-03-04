@@ -366,6 +366,13 @@ public class WindowManager : IDisposable
     {
         Console.WriteLine($"[WindowManager] CloseWindow: {windowId}");
 
+        // Close child windows first (cascade)
+        var children = _windowsById.Values
+            .Where(w => w.ParentWindowId == windowId)
+            .Select(w => w.Id).ToList();
+        foreach (var childId in children)
+            CloseWindow(childId);
+
         if (_windowsById.TryGetValue(windowId, out var window) && window.NativeWindow != null)
             window.NativeWindow.Close();
         UnregisterWindow(windowId);
@@ -1061,7 +1068,7 @@ public class WindowManager : IDisposable
         foreach (var (id, window) in _windowsById)
         {
             if (id == draggedId) continue;
-            if (window.WindowType == "ribbon" || window.WindowType == "overlay") continue;
+            if (window.GetPlugin().ExcludeFromTabGroups) continue;
             if (window.GroupId != null && window.GroupId == draggedWindow.GroupId) continue;
             if (window.NativeWindow == null) continue;
 
@@ -1083,8 +1090,8 @@ public class WindowManager : IDisposable
         if (!_windowsById.TryGetValue(targetWindowId, out var targetWindow)) return;
         if (!_windowsById.TryGetValue(windowToMergeId, out var windowToMerge)) return;
         if (targetWindowId == windowToMergeId) return;
-        if (targetWindow.WindowType == "ribbon" || targetWindow.WindowType == "overlay") return;
-        if (windowToMerge.WindowType == "overlay") return;
+        if (targetWindow.GetPlugin().ExcludeFromTabGroups) return;
+        if (windowToMerge.GetPlugin().ExcludeFromTabGroups) return;
 
         if (targetWindow.GroupId != null && _tabGroups.TryGetValue(targetWindow.GroupId, out var existingGroup))
         {

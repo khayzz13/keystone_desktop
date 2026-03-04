@@ -169,7 +169,9 @@ public class DyLibLoader
         foreach (var dll in dlls)
         {
             var name = Path.GetFileNameWithoutExtension(dll);
-            if (name.StartsWith("Microsoft.") || name.StartsWith("System.") || name.StartsWith("Keystone.Core")) continue;
+            if (name.StartsWith("Microsoft.") || name.StartsWith("System.")) continue;
+            if (AssemblyLoadContext.Default.Assemblies.Any(a => a.GetName().Name == name))
+            { Console.WriteLine($"[DyLibLoader] Skipping {name} (already in default ALC)"); continue; }
             Load(dll);
         }
     }

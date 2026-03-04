@@ -175,6 +175,12 @@ public class ManagedWindow : IDisposable
     public string WindowType { get; }
     public IntPtr Handle => _nativeWindow?.Handle ?? IntPtr.Zero;
     public INativeWindow? NativeWindow => _nativeWindow;
+    public string? ParentWindowId { get; set; }
+
+    // Observable state (updated by delegate callbacks, read from any thread)
+    public bool IsFocused { get; private set; }
+    public bool IsMinimized { get; private set; }
+    public bool IsFullscreen { get; private set; }
 
     public IWindowPlugin GetPlugin() { lock (_pluginLock) return _plugin; }
     public object? GetGpuContext() => _renderThread?.Gpu;
@@ -937,6 +943,16 @@ public class ManagedWindow : IDisposable
         OnTabDraggedOut = null;
     }
 
+    // --- Window Event Push ---
+
+    private void PushWindowEvent(string type, object? data = null)
+    {
+        var payload = data != null
+            ? new { type, data }
+            : (object)new { type };
+        BunManager.Instance.Push($"window:{Id}:event", payload);
+    }
+
     // --- Window Delegate (nested, implements INativeWindowDelegate) ---
 
     private sealed class NativeWindowDelegate : INativeWindowDelegate
@@ -944,7 +960,11 @@ public class ManagedWindow : IDisposable
         private readonly ManagedWindow _w;
         internal NativeWindowDelegate(ManagedWindow w) => _w = w;
         public void OnResizeStarted() => _w._isLiveResizing = true;
-        public void OnResized(double w, double h) { _w.UpdateSize(); _w.RequestRedraw(); }
+        public void OnResized(double w, double h)
+        {
+            _w.UpdateSize(); _w.RequestRedraw();
+            _w.PushWindowEvent("resized", new { width = w, height = h });
+        }
         public void OnResizeEnded()
         {
             _w._isLiveResizing = false;
@@ -957,6 +977,12 @@ public class ManagedWindow : IDisposable
             ApplicationRuntime.Instance?.RunOnMainThread(() =>
                 ApplicationRuntime.Instance?.WindowManager.UnregisterWindow(_w.Id));
         }
-        public void OnMoved(double x, double y) { }
+        public void OnMoved(double x, double y) => _w.PushWindowEvent("moved", new { x, y });
+        public void OnFocused()     { _w.IsFocused = true;     _w.PushWindowEvent("focus"); }
+        public void OnBlurred()     { _w.IsFocused = false;    _w.PushWindowEvent("blur"); }
+        public void OnMiniaturized()   { _w.IsMinimized = true;  _w.PushWindowEvent("minimize"); }
+        public void OnDeminiaturized() { _w.IsMinimized = false; _w.PushWindowEvent("restore"); }
+        public void OnEnteredFullscreen() { _w.IsFullscreen = true;  _w.PushWindowEvent("enter-full-screen"); _w.RequestRedraw(); }
+        public void OnExitedFullscreen()  { _w.IsFullscreen = false; _w.PushWindowEvent("leave-full-screen"); _w.RequestRedraw(); }
     }
 }

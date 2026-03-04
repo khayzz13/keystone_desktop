@@ -1,6 +1,6 @@
 # Configuration, Window Chrome & Build
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-03
 
 Keystone uses two configuration files with different responsibilities:
 
@@ -36,7 +36,15 @@ Lives at the root of your app directory. The host searches `keystone.config.json
       "spawn": true,          // open this window on launch
       "titleBarStyle": "hidden",  // "hidden" | "toolkit" | "toolkit-native" | "none"
       "floating": false,      // always-on-top (default: false)
-      "renderless": false     // skip GPU/Skia entirely for web-only windows (default: false)
+      "renderless": false,    // skip GPU/Skia entirely for web-only windows (default: false)
+      "resizable": true,      // whether the window can be resized (default: true)
+      "fullscreen": false,    // launch in fullscreen (default: false)
+      "opacity": 1.0,         // window opacity 0.0–1.0 (default: 1.0)
+      "minWidth": null,       // minimum width constraint (optional)
+      "minHeight": null,      // minimum height constraint (optional)
+      "maxWidth": null,       // maximum width constraint (optional)
+      "maxHeight": null,      // maximum height constraint (optional)
+      "aspectRatio": null     // lock aspect ratio, e.g. 1.777 for 16:9 (optional)
     }
   ],
 
@@ -156,6 +164,14 @@ Each entry declares a component type. The `component` name maps to a web compone
 | `titleBarStyle` | string | `"hidden"` | See [Window Chrome](#window-chrome) below |
 | `floating` | bool | false | Always-on-top |
 | `renderless` | bool | false | Skip GPU context and render thread entirely |
+| `resizable` | bool | true | Whether the window can be resized |
+| `fullscreen` | bool | false | Launch in fullscreen mode |
+| `opacity` | number | 1.0 | Window opacity (0.0–1.0) |
+| `minWidth` | number | null | Minimum width constraint |
+| `minHeight` | number | null | Minimum height constraint |
+| `maxWidth` | number | null | Maximum width constraint |
+| `maxHeight` | number | null | Maximum height constraint |
+| `aspectRatio` | number | null | Lock aspect ratio (e.g. 1.777 for 16:9) |
 
 #### `renderless`
 

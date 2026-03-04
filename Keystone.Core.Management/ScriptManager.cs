@@ -410,7 +410,7 @@ public class ToolScriptGlobals
 
     public void CloseWindow(string id) => RunOnMain(() => InvokeWindowManager("CloseWindow", id));
 
-    public void CloseAllWindows(string? exceptType = "ribbon")
+    public void CloseAllWindows(string? exceptType = null)
     {
         RunOnMain(() =>
         {

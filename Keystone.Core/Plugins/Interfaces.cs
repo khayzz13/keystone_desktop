@@ -54,6 +54,9 @@ public interface IWindowPlugin
 
     /// <summary>Whether to exclude this window from workspace serialization.</summary>
     bool ExcludeFromWorkspace => false;
+
+    /// <summary>Whether to exclude this window from tab group merging.</summary>
+    bool ExcludeFromTabGroups => false;
 }
 
 public abstract class WindowPluginBase : IWindowPlugin
@@ -70,6 +73,7 @@ public abstract class WindowPluginBase : IWindowPlugin
     public virtual string? SerializeConfig() => null;
     public virtual void RestoreConfig(string json) { }
     public virtual bool ExcludeFromWorkspace => false;
+    public virtual bool ExcludeFromTabGroups => false;
 
     // Overlay system — wired by ManagedWindow, positions at OverlayAnchorX
     public Action<IOverlayContent, double, double>? ShowOverlay { get; set; }
@@ -146,6 +150,13 @@ public interface ICoreContext
     event Action? OnSystemWillSleep;
     /// <summary>Fired when the system wakes from sleep.</summary>
     event Action? OnSystemDidWake;
+
+    /// <summary>Fired when a second app instance launches. Args: (argv, workingDir).</summary>
+    event Action<string[], string>? OnSecondInstance;
+    /// <summary>Fired when the OS opens URLs with this app (custom protocol, etc.).</summary>
+    event Action<string[]>? OnOpenUrls;
+    /// <summary>Fired when the OS opens a file with this app.</summary>
+    event Action<string>? OnOpenFile;
 
     /// <summary>Prevent idle system sleep. Returns an opaque token to pass to EndPreventSleep.</summary>
     object? BeginPreventSleep(string reason);

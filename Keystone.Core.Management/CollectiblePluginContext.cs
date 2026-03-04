@@ -46,12 +46,9 @@ public class CollectiblePluginContext : IDisposable
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Plugin system requires dynamic loading")]
     private Assembly? OnResolving(AssemblyLoadContext ctx, AssemblyName name)
     {
-        // Share Keystone.Core.* from default context
-        if (name.Name?.StartsWith("Keystone.Core") == true)
-        {
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                if (asm.GetName().Name == name.Name) return asm;
-        }
+        // Share any assembly already in the default context (framework + app assembly)
+        foreach (var asm in AssemblyLoadContext.Default.Assemblies)
+            if (asm.GetName().Name == name.Name) return asm;
 
         // Probe dylib directory for dependencies
         var dir = Path.GetDirectoryName(_assemblyPath);

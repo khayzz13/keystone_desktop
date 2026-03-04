@@ -104,6 +104,72 @@ public class MacOSNativeWindow : INativeWindow
     public void Zoom() => _nsWindow.Zoom(null);
     public void Close() => _nsWindow.Close();
 
+    // ── Window semantics ──────────────────────────────────────────────────
+
+    public void SetMinSize(double w, double h)
+        => _nsWindow.MinSize = new CGSize(w, h);
+
+    public void SetMaxSize(double w, double h)
+        => _nsWindow.MaxSize = new CGSize(w, h);
+
+    public void SetAspectRatio(double ratio)
+    {
+        if (ratio <= 0)
+            _nsWindow.ResizeIncrements = new CGSize(1, 1); // clear
+        else
+            _nsWindow.ContentAspectRatio = new CGSize(ratio, 1);
+    }
+
+    public void SetOpacity(double opacity)
+    {
+        _nsWindow.IsOpaque = opacity >= 1.0;
+        _nsWindow.AlphaValue = (nfloat)Math.Clamp(opacity, 0.0, 1.0);
+    }
+
+    public void EnterFullscreen()
+    {
+        if (!IsFullscreen)
+            _nsWindow.ToggleFullScreen(null);
+    }
+
+    public void ExitFullscreen()
+    {
+        if (IsFullscreen)
+            _nsWindow.ToggleFullScreen(null);
+    }
+
+    public bool IsFullscreen =>
+        (_nsWindow.StyleMask & NSWindowStyle.FullScreenWindow) != 0;
+
+    public bool IsMinimized => _nsWindow.IsMiniaturized;
+
+    public bool IsFocused => _nsWindow.IsKeyWindow;
+
+    public void SetContentProtection(bool enabled)
+        => _nsWindow.SharingType = enabled ? NSWindowSharingType.None : NSWindowSharingType.ReadOnly;
+
+    public void SetIgnoreMouseEvents(bool ignore)
+        => _nsWindow.IgnoresMouseEvents = ignore;
+
+    public void SetResizable(bool resizable)
+    {
+        if (resizable)
+            _nsWindow.StyleMask |= NSWindowStyle.Resizable;
+        else
+            _nsWindow.StyleMask &= ~NSWindowStyle.Resizable;
+    }
+
+    public void SetParent(INativeWindow? parent)
+    {
+        if (_nsWindow.ParentWindow != null)
+            _nsWindow.ParentWindow.RemoveChildWindow(_nsWindow);
+
+        if (parent is MacOSNativeWindow macParent)
+            macParent._nsWindow.AddChildWindow(_nsWindow, NSWindowOrderingMode.Above);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+
     public void SetDelegate(INativeWindowDelegate del)
     {
         _delegate = new KeystoneWindowDelegate(del);
@@ -158,7 +224,7 @@ public class MacOSNativeWindow : INativeWindow
         return metalLayer;
     }
 
-    // === Window Delegate (moved from NativeAppKit.cs) ===
+    // === Window Delegate ===
 
     private class KeystoneWindowDelegate : NSObject, INSWindowDelegate
     {
@@ -175,7 +241,6 @@ public class MacOSNativeWindow : INativeWindow
         [Export("windowDidResize:")]
         public void DidResize(NSNotification notification)
         {
-            // Get new size from window
             var nsWindow = notification.Object as NSWindow;
             if (nsWindow != null)
             {
@@ -197,5 +262,23 @@ public class MacOSNativeWindow : INativeWindow
                 _del.OnMoved((double)f.X, (double)f.Y);
             }
         }
+
+        [Export("windowDidBecomeKey:")]
+        public void DidBecomeKey(NSNotification notification) => _del.OnFocused();
+
+        [Export("windowDidResignKey:")]
+        public void DidResignKey(NSNotification notification) => _del.OnBlurred();
+
+        [Export("windowDidMiniaturize:")]
+        public void DidMiniaturize(NSNotification notification) => _del.OnMiniaturized();
+
+        [Export("windowDidDeminiaturize:")]
+        public void DidDeminiaturize(NSNotification notification) => _del.OnDeminiaturized();
+
+        [Export("windowDidEnterFullScreen:")]
+        public void DidEnterFullScreen(NSNotification notification) => _del.OnEnteredFullscreen();
+
+        [Export("windowDidExitFullScreen:")]
+        public void DidExitFullScreen(NSNotification notification) => _del.OnExitedFullscreen();
     }
 }

@@ -64,13 +64,18 @@ public class ApplicationRuntime : ICoreContext
     public event Action? OnSystemWillSleep;
     public event Action? OnSystemDidWake;
 
-    // Process lifecycle events — analogous to Electron's app.on('render-process-gone') etc.
+    // Process lifecycle events
     /// <summary>Fired when the Bun subprocess exits unexpectedly. Arg is the OS exit code.</summary>
     public event Action<int>? OnBunCrash;
     /// <summary>Fired after Bun successfully restarts following a crash. Arg is the restart attempt number (1-based).</summary>
     public event Action<int>? OnBunRestart;
     /// <summary>Fired when a WKWebView content process terminates unexpectedly. Arg is the window Id.</summary>
     public event Action<string>? OnWebViewCrash;
+
+    // App activation events
+    public event Action<string[], string>? OnSecondInstance;
+    public event Action<string[]>? OnOpenUrls;
+    public event Action<string>? OnOpenFile;
 
     internal void RaiseWebViewCrash(string windowId) => OnWebViewCrash?.Invoke(windowId);
 
@@ -118,7 +123,35 @@ public class ApplicationRuntime : ICoreContext
 
         // Forward platform sleep/wake to runtime events
         _platform.OnSystemWillSleep += () => OnSystemWillSleep?.Invoke();
-        _platform.OnSystemDidWake += () => OnSystemDidWake?.Invoke();
+        _platform.OnSystemDidWake += () =>
+        {
+            OnSystemDidWake?.Invoke();
+            // Restart display link if it stopped firing during sleep
+            _displayLink.EnsureRunning();
+            // Wake all render threads so they resume rendering
+            foreach (var w in _windowManager.GetAllWindows())
+                w.RequestRedraw();
+        };
+
+        // Forward open events from platform to runtime + push to browser
+        _platform.OnSecondInstance += (argv, cwd) =>
+        {
+            OnSecondInstance?.Invoke(argv, cwd);
+            BunManager.Instance.Push("__secondInstance__", new { argv, cwd });
+            // Bring existing windows to front
+            RunOnMainThread(() => _platform.BringAllWindowsToFront());
+        };
+        _platform.OnOpenUrls += urls =>
+        {
+            OnOpenUrls?.Invoke(urls);
+            foreach (var url in urls)
+                BunManager.Instance.Push("__openUrl__", new { url });
+        };
+        _platform.OnOpenFile += path =>
+        {
+            OnOpenFile?.Invoke(path);
+            BunManager.Instance.Push("__openFile__", new { path });
+        };
 
         // Wire Flex layout renderer
         Keystone.Core.UI.FlexNode.RenderImpl = FlexRenderer.Render;
@@ -136,6 +169,13 @@ public class ApplicationRuntime : ICoreContext
     [UnconditionalSuppressMessage("Trimming", "IL2072", Justification = "App assembly loading requires dynamic type instantiation")]
     public void Initialize()
     {
+        // Single-instance lock — if another instance is running, forward argv and exit
+        if (!_platform.TryAcquireSingleInstanceLock(_config.Id))
+        {
+            Console.WriteLine("[ApplicationRuntime] Another instance is running — forwarded argv and exiting");
+            Environment.Exit(0);
+        }
+
         // Expose app identity to child processes (Bun subprocess uses these for process.title, userData paths, etc.)
         Environment.SetEnvironmentVariable("KEYSTONE_APP_NAME", _config.Name);
         Environment.SetEnvironmentVariable("KEYSTONE_APP_ID", _config.Id);
@@ -556,8 +596,7 @@ public class ApplicationRuntime : ICoreContext
         Console.WriteLine("[ApplicationRuntime] Main loop started");
         while (!_cancellation.Token.IsCancellationRequested)
         {
-            if (!_displayLink.WaitForVsync(17))
-                continue;
+            _displayLink.WaitForVsync(17);
 
 #if MACOS
             var pool = objc_autoreleasePoolPush();
@@ -685,7 +724,11 @@ public class ApplicationRuntime : ICoreContext
 
         var headless = winCfg?.Headless ?? false;
         var renderless = headless || (winCfg?.Renderless ?? false);
-        var config = new Platform.WindowConfig(x, y, w, h, floating, titleBarStyle, renderless, headless);
+        var config = new Platform.WindowConfig(x, y, w, h, floating, titleBarStyle, renderless, headless,
+            MinWidth: winCfg?.MinWidth, MinHeight: winCfg?.MinHeight,
+            MaxWidth: winCfg?.MaxWidth, MaxHeight: winCfg?.MaxHeight,
+            AspectRatio: winCfg?.AspectRatio, Opacity: winCfg?.Opacity,
+            Fullscreen: winCfg?.Fullscreen ?? false, Resizable: winCfg?.Resizable ?? true);
         var nativeWindow = _platform.CreateWindow(config);
 
         var managedWindow = CreateWindow(plugin);
@@ -696,6 +739,9 @@ public class ApplicationRuntime : ICoreContext
         // Headless windows are never shown — they run their WebView silently.
         if (!headless)
             nativeWindow.Show();
+
+        if (winCfg?.Fullscreen ?? false)
+            nativeWindow.EnterFullscreen();
 
         RegisterBuiltinInvokeHandlers(managedWindow);
 
@@ -766,12 +812,20 @@ public class ApplicationRuntime : ICoreContext
             var type = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
                        args.TryGetProperty("type", out var t) ? t.GetString() : null;
             if (type == null) return Task.FromResult<object?>(null);
+            var parentId = args.TryGetProperty("parent", out var pid) ? pid.GetString() : null;
             var tcs = new TaskCompletionSource<object?>();
             RunOnMainThread(() =>
             {
                 try
                 {
                     var result = _windowManager.OnSpawnWindowAt?.Invoke(type);
+                    if (result != null && parentId != null)
+                    {
+                        result.Value.managed.ParentWindowId = parentId;
+                        var parentWindow = _windowManager.GetWindow(parentId);
+                        if (parentWindow?.NativeWindow != null)
+                            result.Value.nativeWindow.SetParent(parentWindow.NativeWindow);
+                    }
                     tcs.TrySetResult(result?.managed.Id);
                 }
                 catch (Exception ex) { tcs.TrySetException(ex); }
@@ -841,6 +895,109 @@ public class ApplicationRuntime : ICoreContext
         {
             window.NativeWindow?.StartDrag();
             return null;
+        });
+
+        window.RegisterInvokeHandler("window:getId", _ =>
+            Task.FromResult<object?>(windowId));
+
+        window.RegisterInvokeHandler("window:getTitle", _ =>
+        {
+            var tcs = new TaskCompletionSource<object?>();
+            RunOnMainThread(() => tcs.TrySetResult(window.NativeWindow?.Title));
+            return tcs.Task;
+        });
+
+        window.RegisterInvokeHandler("window:getParentId", _ =>
+            Task.FromResult<object?>(window.ParentWindowId));
+
+        window.RegisterInvokeHandler("window:isFullscreen", _ =>
+            Task.FromResult<object?>(window.IsFullscreen));
+
+        window.RegisterInvokeHandler("window:isMinimized", _ =>
+            Task.FromResult<object?>(window.IsMinimized));
+
+        window.RegisterInvokeHandler("window:isFocused", _ =>
+            Task.FromResult<object?>(window.IsFocused));
+
+        window.RegisterInvokeHandler("window:enterFullscreen", _ =>
+        {
+            RunOnMainThread(() => window.NativeWindow?.EnterFullscreen());
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:exitFullscreen", _ =>
+        {
+            RunOnMainThread(() => window.NativeWindow?.ExitFullscreen());
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:focus", _ =>
+        {
+            RunOnMainThread(() => window.NativeWindow?.Show());
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:hide", _ =>
+        {
+            RunOnMainThread(() => window.NativeWindow?.Hide());
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:show", _ =>
+        {
+            RunOnMainThread(() => window.NativeWindow?.Show());
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:setMinSize", args =>
+        {
+            var w = args.TryGetProperty("width", out var wv) ? wv.GetDouble() : 0;
+            var h = args.TryGetProperty("height", out var hv) ? hv.GetDouble() : 0;
+            RunOnMainThread(() => window.NativeWindow?.SetMinSize(w, h));
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:setMaxSize", args =>
+        {
+            var w = args.TryGetProperty("width", out var wv) ? wv.GetDouble() : double.MaxValue;
+            var h = args.TryGetProperty("height", out var hv) ? hv.GetDouble() : double.MaxValue;
+            RunOnMainThread(() => window.NativeWindow?.SetMaxSize(w, h));
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:setAspectRatio", args =>
+        {
+            var ratio = args.TryGetProperty("ratio", out var rv) ? rv.GetDouble() : 0;
+            RunOnMainThread(() => window.NativeWindow?.SetAspectRatio(ratio));
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:setOpacity", args =>
+        {
+            var val = args.TryGetProperty("opacity", out var ov) ? ov.GetDouble() : 1.0;
+            RunOnMainThread(() => window.NativeWindow?.SetOpacity(val));
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:setResizable", args =>
+        {
+            var val = args.TryGetProperty("resizable", out var rv) && rv.GetBoolean();
+            RunOnMainThread(() => window.NativeWindow?.SetResizable(val));
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:setContentProtection", args =>
+        {
+            var val = args.TryGetProperty("enabled", out var ev) && ev.GetBoolean();
+            RunOnMainThread(() => window.NativeWindow?.SetContentProtection(val));
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("window:setIgnoreMouseEvents", args =>
+        {
+            var val = args.TryGetProperty("ignore", out var iv) && iv.GetBoolean();
+            RunOnMainThread(() => window.NativeWindow?.SetIgnoreMouseEvents(val));
+            return Task.FromResult<object?>(null);
         });
 
         // ── dialog ───────────────────────────────────────────────────────
@@ -1148,6 +1305,29 @@ public class ApplicationRuntime : ICoreContext
         {
             var replyChannel = $"window:{windowId}:__reply__:http";
             return await _httpRouter.DispatchAsync(args, windowId, replyChannel);
+        });
+
+        // ── protocol ────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("app:setAsDefaultProtocolClient", args =>
+        {
+            var scheme = args.TryGetProperty("scheme", out var s) ? s.GetString() : null;
+            if (string.IsNullOrEmpty(scheme)) return Task.FromResult<object?>(false);
+            return Task.FromResult<object?>(_platform.SetAsDefaultProtocolClient(scheme));
+        });
+
+        window.RegisterInvokeHandler("app:removeAsDefaultProtocolClient", args =>
+        {
+            var scheme = args.TryGetProperty("scheme", out var s) ? s.GetString() : null;
+            if (string.IsNullOrEmpty(scheme)) return Task.FromResult<object?>(false);
+            return Task.FromResult<object?>(_platform.RemoveAsDefaultProtocolClient(scheme));
+        });
+
+        window.RegisterInvokeHandler("app:isDefaultProtocolClient", args =>
+        {
+            var scheme = args.TryGetProperty("scheme", out var s) ? s.GetString() : null;
+            if (string.IsNullOrEmpty(scheme)) return Task.FromResult<object?>(false);
+            return Task.FromResult<object?>(_platform.IsDefaultProtocolClient(scheme));
         });
     }
 

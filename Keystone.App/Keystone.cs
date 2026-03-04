@@ -37,6 +37,6 @@ namespace Keystone
     // Layout — ChromePanel, Card, Strip, WarningPanel, StatCard, SettingRow
     // Buttons — immediate-mode button helpers
     // ContextMenu — self-contained right-click menu
-    // Format — FormatAge, FormatVolume, FormatBytes, FormatPercent, FormatDuration
+    // Format — FormatAge, FormatNumber, FormatBytes, FormatPercent, FormatDuration
     // DataTableFactory — scrollable data table builder
 }

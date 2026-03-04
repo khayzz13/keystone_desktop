@@ -21,6 +21,21 @@ public interface INativeWindow : IDisposable
     void SetDelegate(INativeWindowDelegate del);
     void CreateWebView(Action<IWebView> callback);
     object? GetGpuSurface();
+
+    // ── Window semantics ──────────────────────────────────────────────────
+    void SetMinSize(double w, double h);
+    void SetMaxSize(double w, double h);
+    void SetAspectRatio(double ratio); // 0 = clear
+    void SetOpacity(double opacity);   // 0.0–1.0
+    void EnterFullscreen();
+    void ExitFullscreen();
+    bool IsFullscreen { get; }
+    bool IsMinimized { get; }
+    bool IsFocused { get; }
+    void SetContentProtection(bool enabled);
+    void SetIgnoreMouseEvents(bool ignore);
+    void SetResizable(bool resizable);
+    void SetParent(INativeWindow? parent);
 }
 
 public interface INativeWindowDelegate
@@ -30,4 +45,10 @@ public interface INativeWindowDelegate
     void OnResizeEnded();
     void OnClosed();
     void OnMoved(double x, double y);
+    void OnFocused();
+    void OnBlurred();
+    void OnMiniaturized();
+    void OnDeminiaturized();
+    void OnEnteredFullscreen();
+    void OnExitedFullscreen();
 }

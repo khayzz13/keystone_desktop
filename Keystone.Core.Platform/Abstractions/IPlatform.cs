@@ -6,7 +6,11 @@ namespace Keystone.Core.Platform;
 public record WindowConfig(
     double X, double Y, double Width, double Height,
     bool Floating = false, string TitleBarStyle = "hidden",
-    bool Renderless = false, bool Headless = false);
+    bool Renderless = false, bool Headless = false,
+    double? MinWidth = null, double? MinHeight = null,
+    double? MaxWidth = null, double? MaxHeight = null,
+    double? AspectRatio = null, double? Opacity = null,
+    bool Fullscreen = false, bool Resizable = true);
 
 public record OpenDialogOptions(
     string? Title = null, bool Multiple = false, string[]? FileExtensions = null);
@@ -77,4 +81,18 @@ public interface IPlatform
     void AddToolScripts(string[] scriptNames);
 
     void SetWindowListProvider(Func<IEnumerable<(string id, string title)>> provider);
+
+    // ── Single instance ─────────────────────────────────────────────────
+    /// <summary>Acquire a process-wide single-instance lock. Returns false if another instance owns it.</summary>
+    bool TryAcquireSingleInstanceLock(string appId);
+    event Action<string[], string>? OnSecondInstance;
+
+    // ── OS open events ──────────────────────────────────────────────────
+    event Action<string[]>? OnOpenUrls;
+    event Action<string>? OnOpenFile;
+
+    // ── Protocol registration ───────────────────────────────────────────
+    bool SetAsDefaultProtocolClient(string scheme);
+    bool RemoveAsDefaultProtocolClient(string scheme);
+    bool IsDefaultProtocolClient(string scheme);
 }

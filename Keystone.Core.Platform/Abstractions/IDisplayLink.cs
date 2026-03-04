@@ -12,4 +12,6 @@ public interface IDisplayLink : IDisposable
     ManualResetEventSlim Subscribe();
     void Unsubscribe(ManualResetEventSlim signal);
     void Resubscribe(ManualResetEventSlim signal);
+    /// <summary>Restart the display link if it stopped firing (e.g. after sleep/wake).</summary>
+    void EnsureRunning();
 }

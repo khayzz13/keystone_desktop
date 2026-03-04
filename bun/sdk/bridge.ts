@@ -407,7 +407,32 @@ export const app = {
   getVersion: (): Promise<string> => keystone().invoke('app:getVersion'),
   getName: (): Promise<string> => keystone().invoke('app:getName'),
   quit: () => keystone().action('app:quit'),
+
+  /** Subscribe to URLs opened by the OS (custom protocols, etc.). Returns unsubscribe. */
+  onOpenUrl: (callback: (url: string) => void): (() => void) =>
+    keystone().subscribe('__openUrl__', (data: any) => callback(data?.url)),
+  /** Subscribe to files opened by the OS. Returns unsubscribe. */
+  onOpenFile: (callback: (path: string) => void): (() => void) =>
+    keystone().subscribe('__openFile__', (data: any) => callback(data?.path)),
+  /** Subscribe to second-instance launches. Returns unsubscribe. */
+  onSecondInstance: (callback: (argv: string[], cwd: string) => void): (() => void) =>
+    keystone().subscribe('__secondInstance__', (data: any) => callback(data?.argv ?? [], data?.cwd ?? '')),
+
+  /** Register this app as the default handler for a URL scheme. */
+  setAsDefaultProtocolClient: (scheme: string): Promise<boolean> =>
+    keystone().invoke('app:setAsDefaultProtocolClient', { scheme }),
+  /** Remove this app as the default handler for a URL scheme. */
+  removeAsDefaultProtocolClient: (scheme: string): Promise<boolean> =>
+    keystone().invoke('app:removeAsDefaultProtocolClient', { scheme }),
+  /** Check if this app is the default handler for a URL scheme. */
+  isDefaultProtocolClient: (scheme: string): Promise<boolean> =>
+    keystone().invoke('app:isDefaultProtocolClient', { scheme }),
 };
+
+export type WindowEvent =
+  | 'focus' | 'blur' | 'minimize' | 'restore'
+  | 'enter-full-screen' | 'leave-full-screen'
+  | 'moved' | 'resized';
 
 export const nativeWindow = {
   /** Set the title of the current native window */
@@ -416,7 +441,8 @@ export const nativeWindow = {
   maximize: () => keystone().action('window:maximize'),
   close: () => keystone().action('window:close'),
   /** Open a new window of the given registered type. Returns the new window's ID. */
-  open: (type: string): Promise<string> => keystone().invoke('window:open', { type }),
+  open: (type: string, opts?: { parent?: string }): Promise<string> =>
+    keystone().invoke('window:open', { type, ...opts }),
   /** Set whether this window floats above all other windows */
   setFloating: (floating: boolean): Promise<void> =>
     keystone().invoke('window:setFloating', { floating }),
@@ -435,6 +461,63 @@ export const nativeWindow = {
   /** Initiate a native window drag. Must be called from a mousedown handler. */
   startDrag: (): Promise<void> =>
     keystone().invoke('window:startDrag'),
+
+  // ── Identity ────────────────────────────────────────────────────────
+
+  /** Get this window's ID */
+  getId: (): string => _windowId,
+  /** Get this window's title from the native layer */
+  getTitle: (): Promise<string> => keystone().invoke('window:getTitle'),
+  /** Get parent window ID (null if top-level) */
+  getParentId: (): Promise<string | null> => keystone().invoke('window:getParentId'),
+
+  // ── State queries ───────────────────────────────────────────────────
+
+  isFullscreen: (): Promise<boolean> => keystone().invoke('window:isFullscreen'),
+  isMinimized: (): Promise<boolean> => keystone().invoke('window:isMinimized'),
+  isFocused: (): Promise<boolean> => keystone().invoke('window:isFocused'),
+
+  // ── Fullscreen ──────────────────────────────────────────────────────
+
+  enterFullscreen: (): Promise<void> => keystone().invoke('window:enterFullscreen'),
+  exitFullscreen: (): Promise<void> => keystone().invoke('window:exitFullscreen'),
+
+  // ── Constraints + appearance ────────────────────────────────────────
+
+  setMinSize: (width: number, height: number): Promise<void> =>
+    keystone().invoke('window:setMinSize', { width, height }),
+  setMaxSize: (width: number, height: number): Promise<void> =>
+    keystone().invoke('window:setMaxSize', { width, height }),
+  /** Set aspect ratio constraint. Pass 0 to clear. */
+  setAspectRatio: (ratio: number): Promise<void> =>
+    keystone().invoke('window:setAspectRatio', { ratio }),
+  /** Set window opacity (0.0–1.0) */
+  setOpacity: (opacity: number): Promise<void> =>
+    keystone().invoke('window:setOpacity', { opacity }),
+  setResizable: (resizable: boolean): Promise<void> =>
+    keystone().invoke('window:setResizable', { resizable }),
+  /** Prevent screen capture of this window's content */
+  setContentProtection: (enabled: boolean): Promise<void> =>
+    keystone().invoke('window:setContentProtection', { enabled }),
+  /** Make the window transparent to mouse events (click-through) */
+  setIgnoreMouseEvents: (ignore: boolean): Promise<void> =>
+    keystone().invoke('window:setIgnoreMouseEvents', { ignore }),
+
+  // ── Visibility ──────────────────────────────────────────────────────
+
+  focus: (): Promise<void> => keystone().invoke('window:focus'),
+  hide: (): Promise<void> => keystone().invoke('window:hide'),
+  show: (): Promise<void> => keystone().invoke('window:show'),
+
+  // ── Events ──────────────────────────────────────────────────────────
+
+  /** Subscribe to window lifecycle events. Returns an unsubscribe function. */
+  on(event: WindowEvent, callback: (data?: any) => void): () => void {
+    const channel = `window:${_windowId}:event`;
+    return keystone().subscribe(channel, (payload: any) => {
+      if (payload?.type === event) callback(payload.data);
+    });
+  },
 };
 
 export const dialog = {
@@ -567,6 +650,25 @@ export const headless = {
   /** Close a headless window by ID. */
   close: (windowId: string): Promise<void> =>
     keystone().invoke('headless:close', { windowId }),
+};
+
+export const platform = {
+  /** Current platform identifier */
+  get os(): 'macos' | 'linux' | 'windows' {
+    const ua = navigator.userAgent.toLowerCase();
+    if (ua.includes('mac')) return 'macos';
+    if (ua.includes('win')) return 'windows';
+    return 'linux';
+  },
+  /** Check if a capability is available on the current platform */
+  isSupported(feature: string): boolean {
+    const supported = new Set([
+      'fullscreen', 'opacity', 'minMaxSize', 'aspectRatio',
+      'contentProtection', 'clickThrough', 'singleInstance',
+      'protocolHandler', 'openFile', 'openUrl', 'parentChild',
+    ]);
+    return supported.has(feature);
+  },
 };
 
 // Convenience re-exports

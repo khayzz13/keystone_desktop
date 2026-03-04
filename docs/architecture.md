@@ -136,14 +136,14 @@ C# can push data to any named WebSocket channel at any time. The browser subscri
 BunManager.Instance.Push($"window:{windowId}:notification", new { title = "Done" });
 
 // Push to all subscribers of a shared channel
-BunManager.Instance.Push("prices:btc", new { usd = 62_000 });
+BunManager.Instance.Push("app:status", new { state = "ready", uptime = 3600 });
 ```
 
 ```typescript
 import { subscribe } from "@keystone/sdk/bridge";
 
-const unsub = subscribe("prices:btc", (data) => {
-    priceEl.textContent = `$${data.usd.toLocaleString()}`;
+const unsub = subscribe("app:status", (data) => {
+    statusEl.textContent = `Status: ${data.state}`;
 });
 ```
 
