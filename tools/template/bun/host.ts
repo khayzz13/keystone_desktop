@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // host.ts — {{APP_NAME}} Bun host
 // Lifecycle extension point for the Keystone Bun runtime.
 // All hooks are optional — delete what you don't need.

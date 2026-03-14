@@ -1,6 +1,6 @@
 # Architecture & Getting Started
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-07
 
 ## Documentation
 
@@ -107,13 +107,13 @@ The three processes form a full communication triangle — every pair can talk t
 The fastest path from TypeScript to C#. Uses the WebKit script message handler — a direct in-process postMessage call from WebKit to the C# message handler. Zero Bun round-trip.
 
 ```typescript
-import { invoke, dialog } from "@keystone/sdk/bridge";
+import { ipc, dialog } from "@keystone/sdk/bridge";
 
 // Built-in handlers: dialog:*, app:*, external:*, window:*, darkMode:*, battery:*, hotkey:*
 const paths = await dialog.openFile({ multiple: true, filters: [".png", ".jpg"] });
 
 // Custom C# handlers registered with RegisterInvokeHandler
-const result = await invoke("myapp:processFile", { path: "/tmp/foo.png" });
+const result = await ipc.host.call("myapp:processFile", { path: "/tmp/foo.png" });
 ```
 
 ```csharp
@@ -140,9 +140,9 @@ BunManager.Instance.Push("app:status", new { state = "ready", uptime = 3600 });
 ```
 
 ```typescript
-import { subscribe } from "@keystone/sdk/bridge";
+import { ipc } from "@keystone/sdk/bridge";
 
-const unsub = subscribe("app:status", (data) => {
+const unsub = ipc.subscribe("app:status", (data) => {
     statusEl.textContent = `Status: ${data.state}`;
 });
 ```
@@ -158,10 +158,10 @@ For data that lives in Bun — live feeds, file watches, SQLite queries, backgro
 **Named invoke** — the Electron `ipcRenderer.invoke()` equivalent, but targeting Bun:
 
 ```typescript
-import { invokeBun } from "@keystone/sdk/bridge";
+import { ipc } from "@keystone/sdk/bridge";
 
-const notes = await invokeBun<Note[]>("notes:getAll");
-const note  = await invokeBun<Note>("notes:create", { title: "Hello", body: "World" });
+const notes = await ipc.bun.call<Note[]>("notes:getAll");
+const note  = await ipc.bun.call<Note>("notes:create", { title: "Hello", body: "World" });
 ```
 
 Register handlers in the service with `.handle()`:
@@ -183,9 +183,9 @@ export default defineService("notes")
 **Whole-service query** — when a service has a single `onQuery` handler:
 
 ```typescript
-import { query } from "@keystone/sdk/bridge";
+import { ipc } from "@keystone/sdk/bridge";
 
-const files = await query("file-scanner", { dir: "/tmp", extensions: [".log"] });
+const files = await ipc.bun.query("file-scanner", { dir: "/tmp", extensions: [".log"] });
 ```
 
 **Fire-and-forget** — raw typed message, services register handlers with `ctx.onWebMessage`:
@@ -213,7 +213,9 @@ export default defineService("metrics")
 
 ```typescript
 // Browser
-subscribe("metrics:cpu", (data) => {
+import { ipc } from "@keystone/sdk/bridge";
+
+ipc.subscribe("metrics:cpu", (data) => {
     gauge.textContent = `${data.percent}%`;
 });
 ```
@@ -226,10 +228,10 @@ C# writes newline-delimited JSON to Bun's stdin. Used to forward actions, trigge
 
 ```csharp
 // Forward an action to all Bun service onAction handlers
-BunManager.Instance.SendAction("export:pdf");
+BunManager.Instance.HandleAction("export:pdf");
 
 // Query a Bun service from C# (async, with reply)
-var result = await BunManager.Instance.QueryAsync("file-scanner", new { dir = "/tmp" });
+var result = await BunManager.Instance.Query("file-scanner", new { dir = "/tmp" });
 ```
 
 Message types over stdin: `query`, `action`, `eval`, `push`, `health`, `shutdown`.
@@ -242,7 +244,7 @@ Bun writes NDJSON to its own stdout; the C# host reads it on a background thread
 
 ```typescript
 // bun/services/my-service.ts — trigger an action visible to C#
-ctx.action("export:complete");
+svc.ipc.host.action("export:complete");
 ```
 
 ```csharp
@@ -252,7 +254,7 @@ context.OnUnhandledAction = (action, source) => {
 };
 ```
 
-Message types over stdout: `result`, `error`, `service_push`, `action_from_web`, `hmr`, `ready`.
+Message types over stdout: `result`, `error`, `service_push`, `action_from_web`, `query_host`, `relay`, `hmr`, `ready`.
 
 ---
 
@@ -275,12 +277,51 @@ When a worker has `browserAccess: true`, other workers can connect directly via 
 ```typescript
 const dp = ctx.workers.connect("data-processor");
 const result = await dp.query("heavy-compute", bigData);
-dp.subscribe("ticks:realtime", processTick);
+dp.subscribe("events:stream", processEvent);
 ```
 
 ### Worker ↔ Main Bun
 
 Main Bun services also receive the `worker_ports` message and can use `ctx.workers.connect()` and `ctx.relay()` to communicate with workers.
+
+---
+
+### Unified IPC Facade
+
+All three planes expose a consistent `ipc` object so you don't need to memorize which transport each function uses:
+
+**Browser** (`@keystone/sdk/bridge`):
+```typescript
+import { ipc } from "@keystone/sdk/bridge";
+
+await ipc.host.call("app:paths");           // → C# (direct postMessage)
+ipc.host.action("export:pdf");              // → C# (fire-and-forget)
+await ipc.bun.call("notes:getAll");         // → Bun handler (.handle())
+await ipc.bun.query("file-scanner", args);  // → Bun service (.query())
+ipc.subscribe("metrics:cpu", cb);           // channel subscription
+ipc.publish("chat:message", data);          // channel broadcast
+```
+
+**Bun services** (`svc.ipc`):
+```typescript
+await svc.ipc.host.call("service", args);     // → C# host query
+svc.ipc.host.action("export:done");           // → C# action
+await svc.ipc.worker("bg").call("svc", args); // → worker round-trip
+svc.ipc.worker("bg").push("ch", data);        // → worker push
+svc.ipc.web.push("channel", data);            // → browser broadcast
+svc.ipc.web.pushValue("state", data);         // → broadcast with retention
+await svc.ipc.call("other-service", args);    // → local inter-service
+```
+
+**C#** (`context.Ipc`):
+```csharp
+await context.Ipc.Bun.Call("service", args);       // → Bun service query
+context.Ipc.Bun.Push("channel", data);             // → Bun WS broadcast
+await context.Ipc.Worker("bg").Call("svc", args);  // → worker query
+context.Ipc.Web.Push("channel", data);             // → browser via Bun
+```
+
+The old individual exports (`invoke`, `invokeBun`, `query`, `subscribe`, etc.) remain available as aliases.
 
 ---
 
@@ -307,6 +348,8 @@ All recovery behavior is configurable in `keystone.json`:
 }
 ```
 
+**WebView crash recovery** uses exponential backoff — `baseDelay * 2^(crashCount-1)`, capped at 30s. Stops retrying after 5 rapid crashes within 60 seconds. The counter resets when the WebView successfully loads.
+
 Your app layer can hook into crash events:
 
 ```csharp
@@ -320,7 +363,20 @@ context.OnBunRestart += attempt => {
 context.OnWebViewCrash += windowId => {
     logger.Warn($"WebView content process crashed in window {windowId}");
 };
+
+// Unified crash event — all sources (bun, webview, unhandled exception, render exception)
+context.OnCrash += evt => {
+    logger.Error($"[{evt.Kind}] {evt.Message}");
+};
 ```
+
+### Sleep/Wake Recovery
+
+System sleep can stall the `CVDisplayLink` that drives rendering. Keystone detects sleep/wake via `NSWorkspace` notifications and auto-recovers:
+
+- `DisplayLink` tracks firing cadence and auto-restarts when stalled after wake
+- `ApplicationRuntime` calls `_displayLink.EnsureRunning()` on system wake and signals all render threads
+- `context.OnSystemWillSleep` / `context.OnSystemDidWake` events available to app code
 
 ---
 
@@ -345,6 +401,23 @@ _grContext.Dispose();
 ### ManagedWindow Cleanup
 
 `ManagedWindow.Dispose()` nulls all public `Action` delegates (`OnDirectMessage`, `OnWebViewCrash`, `OnShowOverlay`, `OnCloseOverlay`, `OnTabDraggedOut`) to break reference chains that would otherwise prevent GC from collecting the window and its plugin graph.
+
+---
+
+## C#-Side Communication
+
+The C# host has a unified channel system (`IChannelManager`) for data/event flow between plugins:
+
+- **Typed pub/sub** — `ValueChannel<T>` (retains last value, replays to new subscribers) and `EventChannel<T>` (fire-and-forget). Dispatch goes through the caller's `SynchronizationContext` (render thread safe) or `ThreadPool`.
+- **Render-wake** — `Notify(channel)` / `Subscribe(channel, callback)` — built on `DataChannel` internally, adds managed lifecycle and `IDisposable` return.
+- **Alerts** — `Alert.Error()` / `Warn()` / `Info()` — built on `Notifications` internally, adds assembly-tracked subscribers.
+- **Hot-reload cleanup** — all subscriptions tracked by source assembly, auto-removed on plugin unload.
+
+Access via `context.Channels` in `ICorePlugin.Initialize()`, or `ChannelManager.Instance` from anywhere.
+
+**Named thread pools** (`context.ThreadPools`) consolidate background work — configure pool sizes at startup, queue work by name from any plugin.
+
+See [C# Layer — Channels](./csharp-layer.md#channels--unified-c-communication) and [Thread Pools](./csharp-layer.md#thread-pools) for full API reference.
 
 ---
 

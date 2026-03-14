@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // SceneHitTest - Walk scene tree for hit testing
 // FlexGroupNode delegates to its ButtonRegistry. Other nodes check HitAction bounds.
 

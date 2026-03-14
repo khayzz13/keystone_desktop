@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // StateManager - Centralized transient state for engine infrastructure
 // Manages per-window input, menus, drag, context menus, connection, and services
 

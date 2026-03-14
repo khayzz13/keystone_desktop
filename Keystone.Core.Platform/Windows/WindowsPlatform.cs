@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // WindowsPlatform — Win32 implementation of IPlatform.
 // Pure P/Invoke into user32.dll, shell32.dll, shcore.dll, comdlg32.dll.
 // All window operations must happen on the thread that called Initialize().

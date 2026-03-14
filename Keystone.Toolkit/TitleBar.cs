@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // Title Bar - Fixed height title bar with tabs, close, minimize, float toggle
 // Build() returns a FlexNode tree; Render() is a thin wrapper for immediate-mode callers.
 

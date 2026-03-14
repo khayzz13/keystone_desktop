@@ -1,7 +1,13 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Threading;
 #if MACOS
@@ -42,11 +48,19 @@ public class ApplicationRuntime : ICoreContext
     private DyLibLoader? _userLoader;
     private DyLibLoader? _extensionLoader;
     private ScriptManager? _scriptManager;
-    private BunProcess? _bunProcess;
+    private ProcessSupervisor? _processSupervisor;
     private readonly HttpRouter _httpRouter = new();
+    private readonly ThreadPoolManager _threadPoolManager = new();
+    private readonly IpcHub _ipcHub = new();
     private int _windowCounter;
     private int _memCheckCounter;
     private long _lastPurgeFootprint;
+    private bool _postStartupGcPolicyEnabled;
+    private int _postStartupGcPassesRemaining;
+    private int _nextPostStartupGcFrame;
+    private const int MemCheckIntervalFrames = 600; // ~10s at 60fps
+    private const int PostStartupGcIntervalFrames = 3600; // ~60s at 60fps
+    private const int PostStartupGcPassCount = 5;
     private const long MemoryLimitBytes = 8L * 1024 * 1024 * 1024; // 8 GB
 
     public WindowManager WindowManager => _windowManager;
@@ -72,18 +86,32 @@ public class ApplicationRuntime : ICoreContext
     /// <summary>Fired when a WKWebView content process terminates unexpectedly. Arg is the window Id.</summary>
     public event Action<string>? OnWebViewCrash;
 
+    // Unified crash observability — forwards from CrashReporter
+    public event Action<CrashEvent>? OnCrash
+    {
+        add => CrashReporter.OnCrash += value;
+        remove => CrashReporter.OnCrash -= value;
+    }
+
     // App activation events
     public event Action<string[], string>? OnSecondInstance;
     public event Action<string[]>? OnOpenUrls;
     public event Action<string>? OnOpenFile;
 
-    internal void RaiseWebViewCrash(string windowId) => OnWebViewCrash?.Invoke(windowId);
+    internal void RaiseWebViewCrash(string windowId)
+    {
+        CrashReporter.Report("webview_crash", null, new() { ["windowId"] = windowId });
+        OnWebViewCrash?.Invoke(windowId);
+    }
 
-    private string? _bunHostPath;
-    private string? _bunAppRoot;
-    private string? _bunCompiledExe;
-    private int _bunRestartAttempt;
-    private volatile bool _bunRestartScheduled;
+    private readonly DateTime _startTime = DateTime.UtcNow;
+
+#if MACOS
+    private Keystone.Core.Platform.MacOS.KeystoneSchemeHandler? _schemeHandler;
+#endif
+
+    // Web worker tracking — headless windows spawned via worker:spawn
+    private readonly HashSet<string> _workerIds = new();
 
     // ICoreContext implementation
     Action<string, string>? ICoreContext.OnUnhandledAction
@@ -102,6 +130,9 @@ public class ApplicationRuntime : ICoreContext
     IBunService ICoreContext.Bun => BunManager.Instance;
     IBunWorkerManager ICoreContext.Workers => BunWorkerManager.Instance;
     IHttpRouter ICoreContext.Http => _httpRouter;
+    IThreadPoolManager ICoreContext.ThreadPools => _threadPoolManager;
+    IChannelManager ICoreContext.Channels => ChannelManager.Instance;
+    IIpcFacade ICoreContext.Ipc => _ipcHub;
 
     public ApplicationRuntime(KeystoneConfig config, string rootDir, IPlatform platform)
     {
@@ -119,6 +150,23 @@ public class ApplicationRuntime : ICoreContext
         _displayLink = new TimerDisplayLink();
 #endif
         _actionRouter = new ActionRouter(_windowManager);
+        _processSupervisor = new ProcessSupervisor(new ProcessSupervisor.Config(
+            Recovery: config.ProcessRecovery,
+            Workers: config.Workers,
+            CompiledWorkerExe: config.Bun?.CompiledWorkerExe,
+            RunOnMainThread: RunOnMainThread,
+            OnBunCrash: code => OnBunCrash?.Invoke(code),
+            OnBunRestart: attempt => OnBunRestart?.Invoke(attempt),
+            ExecuteAction: action => _actionRouter.Execute(action, "web"),
+            HotSwapAllSlots: component => { foreach (var w in _windowManager.GetAllWindows()) w.HotSwapSlot(component); },
+#if MACOS
+            OnSchemePortReady: port => _schemeHandler?.SetBunPort(port),
+#else
+            OnSchemePortReady: null,
+#endif
+            OnRuntimeReady: () => { foreach (var core in _pluginRegistry.GetCorePlugins()) core.OnReady(this); },
+            Cancellation: _cancellation.Token
+        ));
         _instance = this;
 
         // Forward platform sleep/wake to runtime events
@@ -182,6 +230,22 @@ public class ApplicationRuntime : ICoreContext
 
         // Network security policy — initialize from config (plugins may merge endpoints via INetworkDeclarer)
         NetworkPolicy.Initialize(_config.Security, _config.Bun?.CompiledExe != null);
+
+        // Push crash events to WebSocket for browser-side diagnostics subscriptions
+        CrashReporter.OnCrash += evt =>
+        {
+            if (BunManager.Instance.IsRunning)
+                BunManager.Instance.Push("diagnostics:crash", evt);
+        };
+
+        // Custom URL scheme — {schemeName}:// provides stable origin, request interception, SW support
+#if MACOS
+        if (_config.CustomScheme)
+        {
+            _schemeHandler = new Keystone.Core.Platform.MacOS.KeystoneSchemeHandler(_config.ResolvedSchemeName);
+            Console.WriteLine($"[ApplicationRuntime] Custom scheme enabled — WebViews will use {_config.ResolvedSchemeName}://app/");
+        }
+#endif
 
         var pluginDir = Path.Combine(_rootDir, _config.Plugins.Dir);
         var userPluginDir = ResolveUserPluginDir(_config.Plugins.UserDir, _rootDir, _config.Name);
@@ -311,7 +375,7 @@ public class ApplicationRuntime : ICoreContext
 
             if (compiledExe != null)
             {
-                StartBun(compiledExe, appBunRoot, compiledExe: compiledExe);
+                _processSupervisor!.Start(compiledExe, appBunRoot, compiledExe: compiledExe);
             }
             else
             {
@@ -327,7 +391,7 @@ public class ApplicationRuntime : ICoreContext
                 }
 
                 if (engineHostTs != null)
-                    StartBun(engineHostTs, appBunRoot);
+                    _processSupervisor!.Start(engineHostTs, appBunRoot);
                 else
                     Console.WriteLine("[ApplicationRuntime] WARNING: host.ts not found and no compiled exe configured — Bun runtime disabled");
             }
@@ -393,169 +457,6 @@ public class ApplicationRuntime : ICoreContext
         return Path.Combine(appRoot, userDir);
     }
 
-    private void StartBun(string hostPath, string appBunRoot, string? compiledExe = null)
-    {
-        _bunHostPath = hostPath;
-        _bunAppRoot = appBunRoot;
-        _bunCompiledExe = compiledExe;
-
-        var process = new BunProcess();
-        WireBunProcess(process, hostPath, appBunRoot);
-
-        if (process.Start(hostPath, appBunRoot, compiledExe))
-        {
-            _bunProcess = process;
-            Console.WriteLine(compiledExe != null
-                ? "[ApplicationRuntime] Bun process started (compiled)"
-                : "[ApplicationRuntime] Bun process started (dev)");
-        }
-        else
-        {
-            Console.WriteLine("[ApplicationRuntime] WARNING: Bun process failed to start");
-            Notifications.Warn("Bun process failed to start");
-        }
-    }
-
-    private void WireBunProcess(BunProcess process, string hostPath, string appBunRoot)
-    {
-        process.OnLine = line =>
-        {
-            if (!BunManager.Instance.IsRunning &&
-                BunManager.Instance.TryAttachFromReadySignal(process, line))
-            {
-                SpawnConfiguredWorkers();
-                return;
-            }
-        };
-
-        process.OnExit = exitCode =>
-        {
-            if (_cancellation.IsCancellationRequested) return; // clean shutdown — do not restart
-
-            Console.WriteLine($"[ApplicationRuntime] Bun process exited (code={exitCode})");
-            BunManager.Instance.Detach();
-            OnBunCrash?.Invoke(exitCode);
-
-            if (_config.ProcessRecovery.BunAutoRestart)
-                ScheduleBunRestart();
-            else
-                Console.WriteLine("[ApplicationRuntime] Bun auto-restart disabled (processRecovery.bunAutoRestart=false)");
-        };
-
-        // Web actions (from JS via WebSocket) route through ActionRouter same as native actions
-        BunManager.Instance.OnWebAction = action => _actionRouter.Execute(action, "web");
-
-        // HMR: when Bun rebuilds a web component, hot-swap it in all windows that host it
-        BunManager.Instance.OnWebComponentHmr = component =>
-        {
-            foreach (var window in _windowManager.GetAllWindows())
-                window.HotSwapSlot(component);
-        };
-    }
-
-    private void ScheduleBunRestart()
-    {
-        if (_bunRestartScheduled) return;
-        _bunRestartScheduled = true;
-
-        var attempt = ++_bunRestartAttempt;
-        var cfg = _config.ProcessRecovery;
-
-        if (attempt > cfg.BunMaxRestarts)
-        {
-            Console.WriteLine($"[ApplicationRuntime] Bun restart limit ({cfg.BunMaxRestarts}) reached — giving up");
-            Notifications.Error($"Bun process failed to recover after {cfg.BunMaxRestarts} attempts.");
-            _bunRestartScheduled = false;
-            return;
-        }
-
-        // Exponential backoff: baseDelay * 2^(attempt-1), capped at maxDelay
-        var delayMs = (int)Math.Min(cfg.BunRestartBaseDelayMs * Math.Pow(2, attempt - 1), cfg.BunRestartMaxDelayMs);
-        Console.WriteLine($"[ApplicationRuntime] Restarting Bun in {delayMs}ms (attempt {attempt}/{cfg.BunMaxRestarts})");
-
-        Task.Run(async () =>
-        {
-            await Task.Delay(delayMs);
-
-            RunOnMainThread(() =>
-            {
-                _bunRestartScheduled = false;
-                _bunProcess?.Dispose();
-
-                var process = new BunProcess();
-                WireBunProcess(process, _bunHostPath!, _bunAppRoot!);
-
-                if (process.Start(_bunHostPath!, _bunAppRoot!, _bunCompiledExe))
-                {
-                    _bunProcess = process;
-                    Console.WriteLine($"[ApplicationRuntime] Bun restarted (attempt {attempt})");
-                    OnBunRestart?.Invoke(attempt);
-                    _bunRestartAttempt = 0; // reset counter on successful start
-                }
-                else
-                {
-                    Console.WriteLine($"[ApplicationRuntime] Bun restart attempt {attempt} failed");
-                    Notifications.Warn($"Bun restart attempt {attempt} failed");
-                    ScheduleBunRestart(); // try again with next backoff step
-                }
-            });
-        });
-    }
-
-    private void SpawnConfiguredWorkers()
-    {
-        var workers = _config.Workers;
-        if (workers == null || workers.Count == 0) return;
-
-        // Resolve compiled worker exe for package mode
-        string? compiledWorkerExe = null;
-        if (_config.Bun?.CompiledWorkerExe is { } workerExeName)
-        {
-            var assemblyDir = Path.GetDirectoryName(typeof(ApplicationRuntime).Assembly.Location) ?? "";
-            var macosDir = Path.Combine(assemblyDir, "..", "MacOS");
-            foreach (var candidate in new[] {
-                Path.Combine(assemblyDir, workerExeName),
-                Path.Combine(macosDir, workerExeName),
-            })
-            {
-                if (File.Exists(candidate)) { compiledWorkerExe = candidate; break; }
-            }
-
-            if (compiledWorkerExe != null)
-                Console.WriteLine($"[ApplicationRuntime] Worker exe: {compiledWorkerExe}");
-        }
-
-        var workerHostPath = Path.Combine(Path.GetDirectoryName(_bunHostPath!)!, "worker-host.ts");
-        var readyCount = 0;
-        var totalAutoStart = workers.Count(w => w.AutoStart);
-
-        foreach (var cfg in workers.Where(w => w.AutoStart))
-        {
-            var worker = BunWorkerManager.Instance.Spawn(cfg, workerHostPath, _bunAppRoot!, compiledWorkerExe);
-            worker.OnRestart = attempt =>
-                Console.WriteLine($"[ApplicationRuntime] Worker '{cfg.Name}' recovered (attempt {attempt})");
-
-            // Track ready state for port broadcast
-            var origOnLine = worker.Config; // just need a closure trigger
-            var checkReady = () =>
-            {
-                if (worker.IsRunning && Interlocked.Increment(ref readyCount) == totalAutoStart)
-                    BunWorkerManager.Instance.BroadcastPorts();
-            };
-
-            // Hook into the worker's ready event — poll briefly since ready fires on the reader thread
-            Task.Run(async () =>
-            {
-                for (var i = 0; i < 100; i++) // 10 second timeout
-                {
-                    await Task.Delay(100);
-                    if (worker.IsRunning) { checkReady(); return; }
-                }
-                Console.WriteLine($"[ApplicationRuntime] Worker '{cfg.Name}' did not become ready in time");
-            });
-        }
-    }
-
     public ManagedWindow CreateWindow(IWindowPlugin plugin)
     {
         var id = (++_windowCounter).ToString();
@@ -583,6 +484,8 @@ public class ApplicationRuntime : ICoreContext
         if (activeWorkspace != null)
         {
             Console.WriteLine($"[ApplicationRuntime] Restoring workspace: {activeWorkspace}");
+            // Spawn excluded windows first (e.g. ribbon — always spawned fresh, never from workspace)
+            SpawnExcludedWindows();
             _windowManager.LoadWorkspace(activeWorkspace);
         }
         else
@@ -592,6 +495,13 @@ public class ApplicationRuntime : ICoreContext
 
         // Pump run loop to flush GPU operations from window creation
         _platform.PumpRunLoop(0.1);
+
+        // If no Bun configured, fire OnReady now (with Bun, OnReady fires from ProcessSupervisor after ready signal)
+        if (_config.Bun is not { Enabled: true })
+        {
+            foreach (var core in _pluginRegistry.GetCorePlugins())
+                core.OnReady(this);
+        }
 
         Console.WriteLine("[ApplicationRuntime] Main loop started");
         while (!_cancellation.Token.IsCancellationRequested)
@@ -645,8 +555,27 @@ public class ApplicationRuntime : ICoreContext
         }
     }
 
+    /// <summary>
+    /// Spawn config windows that have spawn=true but ExcludeFromWorkspace=true.
+    /// Called before workspace restore so these windows exist independently of any saved workspace.
+    /// </summary>
+    private void SpawnExcludedWindows()
+    {
+        foreach (var winCfg in _config.Windows)
+        {
+            if (!winCfg.Spawn) continue;
+            var plugin = _pluginRegistry.GetWindow(winCfg.Component);
+            if (plugin != null && plugin.ExcludeFromWorkspace)
+                _windowManager.SpawnWindow(winCfg.Component);
+        }
+    }
+
     public void Shutdown()
     {
+        // Notify core plugins before shutdown
+        foreach (var core in _pluginRegistry.GetCorePlugins())
+            try { core.OnShutdown(this); } catch (Exception ex) { Console.WriteLine($"[Runtime] CorePlugin.OnShutdown: {ex.Message}"); }
+
         OnShutdown?.Invoke();
 
         // Auto-save current workspace
@@ -657,7 +586,7 @@ public class ApplicationRuntime : ICoreContext
         _cancellation.Cancel();
         BunWorkerManager.Instance.StopAll();
         BunManager.Instance.Shutdown();
-        _bunProcess?.Dispose();
+        _processSupervisor?.Shutdown();
         _loader?.StopWatching();
         _userLoader?.StopWatching();
         _extensionLoader?.StopWatching();
@@ -667,6 +596,7 @@ public class ApplicationRuntime : ICoreContext
             window.Dispose();
         _windowManager.Dispose();
         _displayLink.Dispose();
+        _threadPoolManager.Dispose();
         Console.WriteLine("[ApplicationRuntime] Shutdown complete");
         _platform.Quit();
     }
@@ -730,6 +660,10 @@ public class ApplicationRuntime : ICoreContext
             AspectRatio: winCfg?.AspectRatio, Opacity: winCfg?.Opacity,
             Fullscreen: winCfg?.Fullscreen ?? false, Resizable: winCfg?.Resizable ?? true);
         var nativeWindow = _platform.CreateWindow(config);
+#if MACOS
+        if (_schemeHandler != null && nativeWindow is Keystone.Core.Platform.MacOS.MacOSNativeWindow macNW)
+            macNW.SchemeHandler = _schemeHandler;
+#endif
 
         var managedWindow = CreateWindow(plugin);
         managedWindow.AlwaysOnTop = floating;
@@ -751,7 +685,17 @@ public class ApplicationRuntime : ICoreContext
         {
             var port = BunManager.Instance.BunPort;
             if (port > 0)
-                managedWindow.LoadWebComponent(windowType, port);
+            {
+                if (!string.IsNullOrEmpty(winCfg?.ExternalUrl))
+                {
+                    var url = winCfg.ExternalUrl.Replace("{bunPort}", port.ToString());
+                    managedWindow.LoadExternalUrl(url, port);
+                }
+                else
+                {
+                    managedWindow.LoadWebComponent(windowType, port);
+                }
+            }
             else
                 Console.WriteLine($"[ApplicationRuntime] Warning: Bun not ready when spawning web-only window '{windowType}'");
         }
@@ -1297,14 +1241,75 @@ public class ApplicationRuntime : ICoreContext
             return Task.FromResult<object?>(null);
         });
 
+        // ── web workers ──────────────────────────────────────────────────────
+        // Headless window workers with postMessage/onMessage semantics.
+
+        window.RegisterInvokeHandler("worker:spawn", args =>
+        {
+            var component = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                            args.TryGetProperty("component", out var c) ? c.GetString() : null;
+            if (string.IsNullOrEmpty(component))
+                return Task.FromResult<object?>(null);
+
+            var tcs = new TaskCompletionSource<object?>();
+            RunOnMainThread(() =>
+            {
+                try
+                {
+                    var result = _windowManager.OnSpawnWindowAt?.Invoke(component);
+                    if (result != null)
+                    {
+                        _workerIds.Add(result.Value.managed.Id);
+                        tcs.TrySetResult(result.Value.managed.Id);
+                    }
+                    else tcs.TrySetResult(null);
+                }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            });
+            return tcs.Task;
+        });
+
+        window.RegisterInvokeHandler("worker:evaluate", args =>
+        {
+            var workerId = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                           args.TryGetProperty("workerId", out var wid) ? wid.GetString() : null;
+            var js = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                     args.TryGetProperty("js", out var j) ? j.GetString() : null;
+            if (string.IsNullOrEmpty(workerId) || string.IsNullOrEmpty(js))
+                return Task.FromResult<object?>(null);
+
+            var target = _windowManager.GetWindow(workerId);
+            if (target == null) return Task.FromResult<object?>(null);
+
+            var tcs = new TaskCompletionSource<object?>();
+            RunOnMainThread(() => target.EvaluateJavaScriptWithResult(js, result => tcs.TrySetResult(result)));
+            return tcs.Task;
+        });
+
+        window.RegisterInvokeHandler("worker:terminate", args =>
+        {
+            var workerId = args.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                           args.TryGetProperty("workerId", out var wid) ? wid.GetString() : null;
+            if (!string.IsNullOrEmpty(workerId))
+            {
+                _workerIds.Remove(workerId);
+                RunOnMainThread(() => _windowManager.CloseWindow(workerId));
+            }
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("worker:list", _ =>
+        {
+            // Lazy cleanup — remove IDs for windows that no longer exist
+            _workerIds.RemoveWhere(id => _windowManager.GetWindow(id) == null);
+            return Task.FromResult<object?>(_workerIds.ToArray());
+        });
+
         // ── http ──────────────────────────────────────────────────────────
         // Routes all fetch("/api/...") calls from the browser through HttpRouter.
-        // The reply channel is computed from the invoke id so the bridge can match responses.
-
         window.RegisterInvokeHandler(HttpRouter.InvokeChannel, async args =>
         {
-            var replyChannel = $"window:{windowId}:__reply__:http";
-            return await _httpRouter.DispatchAsync(args, windowId, replyChannel);
+            return await _httpRouter.DispatchAsync(args, windowId);
         });
 
         // ── protocol ────────────────────────────────────────────────────
@@ -1329,6 +1334,138 @@ public class ApplicationRuntime : ICoreContext
             if (string.IsNullOrEmpty(scheme)) return Task.FromResult<object?>(false);
             return Task.FromResult<object?>(_platform.IsDefaultProtocolClient(scheme));
         });
+
+        // ── webview ──────────────────────────────────────────────────────
+
+        window.RegisterInvokeHandler("webview:setInspectable", args =>
+        {
+            var enabled = args.TryGetProperty("enabled", out var ev) && ev.GetBoolean();
+            RunOnMainThread(() => window.SetWebViewInspectable(enabled));
+            return Task.FromResult<object?>(null);
+        });
+
+        // ── context menu (native NSMenu) ─────────────────────────────────
+
+#if MACOS
+        window.RegisterInvokeHandler("window:showContextMenu", args =>
+        {
+            var tcs = new TaskCompletionSource<object?>();
+            RunOnMainThread(() =>
+            {
+                var menu = new NSMenu();
+                foreach (var item in args.GetProperty("items").EnumerateArray())
+                {
+                    if (item.ValueKind == System.Text.Json.JsonValueKind.String && item.GetString() == "separator")
+                    { menu.AddItem(NSMenuItem.SeparatorItem); continue; }
+
+                    var label = item.GetProperty("label").GetString() ?? "";
+                    var action = item.GetProperty("action").GetString() ?? "";
+                    var act = action;
+                    menu.AddItem(new NSMenuItem(label, (s, e) =>
+                        _actionRouter.Execute(act, windowId)));
+                }
+                var view = window.NativeWindow?.GetContentView() as NSView;
+                if (view != null)
+                    NSMenu.PopUpContextMenu(menu, NSApplication.SharedApplication.CurrentEvent!, view);
+                tcs.SetResult(null);
+            });
+            return tcs.Task;
+        });
+#endif
+
+        // ── diagnostics / observability ──────────────────────────────────
+
+        window.RegisterInvokeHandler("diagnostics:crashes", _ =>
+            Task.FromResult<object?>(CrashReporter.Recent));
+
+        window.RegisterInvokeHandler("diagnostics:health", _ =>
+        {
+            var footprint = GetPhysicalFootprint();
+            var result = new
+            {
+                uptimeMs = (long)(DateTime.UtcNow - _startTime).TotalMilliseconds,
+                memoryBytes = footprint,
+                bunRunning = BunManager.Instance.IsRunning,
+                windowCount = _windowManager.GetAllWindows().Count(),
+                recentCrashes = CrashReporter.Recent.Count,
+            };
+            return Task.FromResult<object?>(result);
+        });
+
+        // ── service worker control ──────────────────────────────────────
+
+        window.RegisterInvokeHandler("sw:status", async _ =>
+            await window.GetServiceWorkerStatus());
+
+        window.RegisterInvokeHandler("sw:unregister", _ =>
+        {
+            window.UnregisterServiceWorkers();
+            return Task.FromResult<object?>(null);
+        });
+
+        window.RegisterInvokeHandler("sw:clearCaches", _ =>
+        {
+            window.ClearServiceWorkerCaches();
+            return Task.FromResult<object?>(null);
+        });
+
+        // ── request interception / navigation policy ────────────────────
+
+        window.RegisterInvokeHandler("webview:setNavigationPolicy", args =>
+        {
+            // Accept a list of blocked URL patterns (simple prefix/contains matching)
+            var blocked = new List<string>();
+            if (args.TryGetProperty("blocked", out var arr) && arr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                foreach (var item in arr.EnumerateArray())
+                    if (item.GetString() is { } s) blocked.Add(s);
+
+            window.SetNavigationPolicy(blocked.Count > 0
+                ? url => !blocked.Any(b => url.Contains(b))
+                : null);
+            return Task.FromResult<object?>(null);
+        });
+
+#if MACOS
+        window.RegisterInvokeHandler("webview:setRequestInterceptor", args =>
+        {
+            if (_schemeHandler == null) return Task.FromResult<object?>(new { error = "customScheme not enabled" });
+
+            var rules = new List<(string pattern, string action, string? target)>();
+            if (args.TryGetProperty("rules", out var arr) && arr.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var rule in arr.EnumerateArray())
+                {
+                    var pattern = rule.GetProperty("pattern").GetString() ?? "";
+                    var act = rule.GetProperty("action").GetString() ?? "allow";
+                    var target = rule.TryGetProperty("target", out var t) ? t.GetString() : null;
+                    rules.Add((pattern, act, target));
+                }
+            }
+
+            if (rules.Count == 0)
+            {
+                _schemeHandler.OnIntercept = null;
+            }
+            else
+            {
+                _schemeHandler.OnIntercept = (url, method) =>
+                {
+                    foreach (var (pattern, action, target) in rules)
+                    {
+                        if (!url.Contains(pattern)) continue;
+                        return action switch
+                        {
+                            "block" => Keystone.Core.Platform.MacOS.SchemeResponse.Blocked(),
+                            "redirect" when target != null => Keystone.Core.Platform.MacOS.SchemeResponse.Redirect(target),
+                            _ => null,
+                        };
+                    }
+                    return null;
+                };
+            }
+            return Task.FromResult<object?>(null);
+        });
+#endif
     }
 
     // === Memory monitoring (platform-specific) ===
@@ -1358,9 +1495,43 @@ public class ApplicationRuntime : ICoreContext
 #endif
     }
 
+    private void RunPostStartupMemoryMaintenance()
+    {
+        if (!_postStartupGcPolicyEnabled && _memCheckCounter >= MemCheckIntervalFrames)
+        {
+            _postStartupGcPolicyEnabled = true;
+            _postStartupGcPassesRemaining = PostStartupGcPassCount;
+            _nextPostStartupGcFrame = _memCheckCounter;
+
+            try
+            {
+                GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.WriteLine($"[MemWatch] failed to enable sustained low latency: {ex.Message}");
+            }
+
+            Console.WriteLine(
+                $"[MemWatch] post-startup GC policy enabled: latency={GCSettings.LatencyMode} background_gen2_passes={PostStartupGcPassCount}");
+        }
+
+        if (_postStartupGcPassesRemaining == 0 || _memCheckCounter < _nextPostStartupGcFrame)
+            return;
+
+        var pass = PostStartupGcPassCount - _postStartupGcPassesRemaining + 1;
+        GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: false);
+        _postStartupGcPassesRemaining--;
+        _nextPostStartupGcFrame = _memCheckCounter + PostStartupGcIntervalFrames;
+        Console.WriteLine($"[MemWatch] scheduled background gen2 pass {pass}/{PostStartupGcPassCount}");
+    }
+
     private void CheckMemoryLimit()
     {
-        if (++_memCheckCounter % 600 != 0) return;
+        if (++_memCheckCounter % MemCheckIntervalFrames != 0) return;
+
+        RunPostStartupMemoryMaintenance();
+
         if (_memCheckCounter < 7200) return;
 
         var footprint = GetPhysicalFootprint();
@@ -1370,8 +1541,10 @@ public class ApplicationRuntime : ICoreContext
 
         if (_memCheckCounter % 1800 == 0)
         {
+            var gcInfo = GC.GetGCMemoryInfo();
             var gcHeap = GC.GetTotalMemory(false);
-            Console.WriteLine($"[MemWatch] footprint={footprint / (1024 * 1024)}mb gc={gcHeap / (1024 * 1024)}mb windows={windows.Count}");
+            var gcCommitted = gcInfo.TotalCommittedBytes;
+            Console.WriteLine($"[MemWatch] footprint={footprint / (1024 * 1024)}mb gc_live={gcHeap / (1024 * 1024)}mb gc_committed={gcCommitted / (1024 * 1024)}mb windows={windows.Count}");
 
             if (_memCheckCounter % 3600 == 0)
             {
@@ -1387,7 +1560,7 @@ public class ApplicationRuntime : ICoreContext
                         totalCacheBytes += bytes;
                     }
                 }
-                var accountedFor = gcHeap + totalCacheBytes + expectedIOSurface;
+                var accountedFor = gcCommitted + totalCacheBytes + expectedIOSurface;
                 var unaccounted = footprint - accountedFor;
 
                 Console.WriteLine($"[MemWatch] GPU cache: {totalResources} resources, {totalCacheBytes / (1024 * 1024)}mb across {windows.Count} windows");
@@ -1398,7 +1571,7 @@ public class ApplicationRuntime : ICoreContext
         }
 
         // IOSurface orphan detection — if unaccounted memory exceeds 200MB,
-        // purge all GPU caches and force GC to reclaim stale IOSurfaces.
+        // purge all GPU caches and force GC to reclaim stale IOSurfaces
         long expectedTotal = 0;
         long cacheTotal = 0;
         foreach (var w in windows)
@@ -1410,7 +1583,8 @@ public class ApplicationRuntime : ICoreContext
                 cacheTotal += bytes;
             }
         }
-        var accounted = GC.GetTotalMemory(false) + cacheTotal + expectedTotal;
+        var gcCommittedNow = GC.GetGCMemoryInfo().TotalCommittedBytes;
+        var accounted = gcCommittedNow + cacheTotal + expectedTotal;
         var orphaned = footprint - accounted;
 
         if (orphaned > 200 * 1024 * 1024 && footprint > _lastPurgeFootprint + 50 * 1024 * 1024)

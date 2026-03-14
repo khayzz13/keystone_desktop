@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using AppKit;
 using CoreAnimation;
 using CoreGraphics;
@@ -13,6 +18,9 @@ public class MacOSNativeWindow : INativeWindow
     private readonly CAMetalLayer? _metalLayer;
     private NSView? _metalView;
     private KeystoneWindowDelegate? _delegate;
+
+    /// <summary>Optional scheme handler — passed to WebViews created by this window.</summary>
+    public KeystoneSchemeHandler? SchemeHandler { get; set; }
 
     // Cached values for thread-safe reads
     private double _cachedScale;
@@ -168,6 +176,8 @@ public class MacOSNativeWindow : INativeWindow
             macParent._nsWindow.AddChildWindow(_nsWindow, NSWindowOrderingMode.Above);
     }
 
+    public object? GetContentView() => _contentView;
+
     // ─────────────────────────────────────────────────────────────────────
 
     public void SetDelegate(INativeWindowDelegate del)
@@ -180,7 +190,7 @@ public class MacOSNativeWindow : INativeWindow
     {
         NSApplication.SharedApplication.InvokeOnMainThread(() =>
         {
-            var wv = new MacOSWebView(_contentView);
+            var wv = new MacOSWebView(_contentView, SchemeHandler);
             callback(wv);
         });
     }

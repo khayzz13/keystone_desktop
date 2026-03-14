@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // LinuxNativeWindow — GTK4 window wrapper implementing INativeWindow.
 // Wraps a GtkApplicationWindow with an overlay layout (drawing area + WebView container).
 

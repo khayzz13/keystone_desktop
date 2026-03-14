@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // @keystone/sdk/host — App host module authoring SDK for Keystone Desktop.
 // Export a defineHost() result as the default export from your app's bun/host.ts
 // to hook into the framework's Bun subprocess lifecycle.

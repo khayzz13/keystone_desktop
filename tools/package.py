@@ -511,7 +511,8 @@ def package(app_root: Path, engine: Path, mode_override=None,
                     all_vars = []
                     for w_name, svcs in workers_services.items():
                         for i, (svc_name, path) in enumerate(svcs):
-                            var = f"_w_{w_name}_{i}"
+                            safe_w = w_name.replace("-", "_").replace(".", "_")
+                            var = f"_w_{safe_w}_{i}"
                             lines.append(f'import * as {var} from "{path}";')
                             all_vars.append((w_name, svc_name, var))
 

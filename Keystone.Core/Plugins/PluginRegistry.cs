@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // PluginRegistry - Manages window and service plugins with hot-reload support
 
 using System;
@@ -71,6 +76,11 @@ public class PluginRegistry : IPluginRegistry
     public ICorePlugin? GetCore(string coreName)
     {
         lock (_lock) { return _corePlugins.TryGetValue(coreName, out var p) ? p : null; }
+    }
+
+    public IReadOnlyList<ICorePlugin> GetCorePlugins()
+    {
+        lock (_lock) return _corePlugins.Values.ToList();
     }
 
     public void RegisterLibrary(ILibraryPlugin plugin)

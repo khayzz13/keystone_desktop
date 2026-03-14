@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
@@ -429,6 +434,7 @@ public class MacOSPlatform : IPlatform
     {
         layer.Device = device;
         layer.PixelFormat = MTLPixelFormat.BGRA8Unorm;
+        layer.FramebufferOnly = true;
         layer.MaximumDrawableCount = 3;
         layer.ContentsScale = (nfloat)contentsScale;
     }
@@ -608,6 +614,8 @@ internal static class MainMenuFactory
         var windowMenu = new NSMenu("Window");
         AddActionItem(windowMenu, "Dev Console", "dev_console", "c",
             NSEventModifierMask.CommandKeyMask | NSEventModifierMask.ShiftKeyMask);
+        AddActionItem(windowMenu, "Web Inspector", "dev_inspector", "i",
+            NSEventModifierMask.CommandKeyMask | NSEventModifierMask.AlternateKeyMask);
         windowMenu.AddItem(NSMenuItem.SeparatorItem);
         AddNativeItem(windowMenu, "Minimize", "performMiniaturize:", "m");
         AddActionItem(windowMenu, "Bring All to Front", "bring_all_front");

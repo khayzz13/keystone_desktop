@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // NotificationOverlay - Toast notification stack rendered in the top-right corner of any window
 // Info/Warning: auto-dismiss after 5s. Errors: persist until dismissed.
 // Usage: call NotificationOverlay.Render(ctx) at the end of any window's Render() method,

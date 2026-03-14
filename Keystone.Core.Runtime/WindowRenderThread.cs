@@ -1,8 +1,15 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // WindowRenderThread - Per-window render thread with demand-driven idle
 // When active: wakes on VSync, renders if needed.
 // When idle: unsubscribes from VSync, sleeps until RequestRedraw sets the signal.
 // Same signal for both paths — no secondary wake mechanism.
 
+using System.Collections.Concurrent;
+using Keystone.Core;
 #if MACOS
 using Foundation;
 #endif
@@ -18,6 +25,7 @@ public class WindowRenderThread : IDisposable
     readonly ManagedWindow _window;
     volatile bool _running;
     bool _disposed;
+    RenderSynchronizationContext? _syncContext;
 
     public IWindowGpuContext Gpu => _gpu;
 
@@ -37,6 +45,8 @@ public class WindowRenderThread : IDisposable
 
     void ThreadLoop()
     {
+        _syncContext = new RenderSynchronizationContext(Thread.CurrentThread);
+        SynchronizationContext.SetSynchronizationContext(_syncContext);
         _gpu.WarmUpShaders();
 
         while (_running)
@@ -46,6 +56,8 @@ public class WindowRenderThread : IDisposable
             _vsyncSignal.Wait();
             _vsyncSignal.Reset();
             if (!_running) break;
+
+            _syncContext.Drain();
 
 #if MACOS
             // Per-frame autorelease pool — NextDrawable() and other Metal/AppKit calls
@@ -68,6 +80,7 @@ public class WindowRenderThread : IDisposable
             catch (Exception ex)
             {
                 Console.WriteLine($"[RenderThread] {_window.Id}: {ex.Message}");
+                CrashReporter.Report("render_exception", ex, new() { ["windowId"] = _window.Id });
             }
         }
     }
@@ -81,5 +94,29 @@ public class WindowRenderThread : IDisposable
         _thread?.Join(2000);
         _gpu.Dispose();
         // Don't dispose _vsyncSignal — owned by ManagedWindow
+    }
+}
+
+// SynchronizationContext for render threads — enables channel callbacks and await
+// continuations to dispatch onto the correct render thread automatically.
+sealed class RenderSynchronizationContext(Thread owner) : SynchronizationContext
+{
+    readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _queue = new();
+
+    public override void Post(SendOrPostCallback d, object? state)
+        => _queue.Enqueue((d, state));
+
+    public override void Send(SendOrPostCallback d, object? state)
+    {
+        if (Thread.CurrentThread == owner) { d(state); return; }
+        using var done = new ManualResetEventSlim();
+        _queue.Enqueue((s => { d(s); done.Set(); }, state));
+        done.Wait();
+    }
+
+    public void Drain()
+    {
+        while (_queue.TryDequeue(out var item))
+            item.Callback(item.State);
     }
 }

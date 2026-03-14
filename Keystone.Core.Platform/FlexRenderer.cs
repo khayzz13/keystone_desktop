@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // FlexRenderer - Bridges FlexNode tree → Taffy layout → RenderContext drawing
 // Layout caching: on cache hit, skips all Taffy FFI (tree alloc, node creation,
 // text measurement, layout compute, result queries) and renders from cached positions.
@@ -17,6 +22,7 @@ public static class FlexRenderer
         // Cache hit: same tree instance + same viewport → skip Taffy entirely
         if (root._layoutValid && root._layoutW == w && root._layoutH == h)
         {
+            RebuildWidgets(root, ctx.State);
             RenderNode(root, IntPtr.Zero, 0, ctx, buttons, x, y, true);
             return;
         }
@@ -136,8 +142,21 @@ public static class FlexRenderer
                 Taffy.layout_set_height(tree, id, th);
         }
 
+        // Widget — delegate to widget's Build() for subtree
+        if (node.Widget != null)
+        {
+            if (!node.Widget._mounted) { node.Widget.OnMount(); node.Widget._mounted = true; }
+            if (node.Widget._needsRedraw) { ctx.State.NeedsRedraw = true; node.Widget._needsRedraw = false; }
+            try { node.Widget._lastBuild = node.Widget.Build(ctx.State); }
+            catch (Exception ex) { node.Widget._lastBuild = null; CrashReporter.ReportWidgetError(node.Widget.Tag, ex); }
+            if (node.Widget._lastBuild != null)
+            {
+                var childId = BuildTree(node.Widget._lastBuild, tree, ctx);
+                Taffy.layout_add_child(tree, id, childId);
+            }
+        }
         // Children
-        if (node.Children != null)
+        else if (node.Children != null)
         {
             for (int i = 0; i < node.Children.Count; i++)
             {
@@ -187,6 +206,10 @@ public static class FlexRenderer
         bool interactive = node.Action != null;
         bool hovered = interactive && ctx.IsHovered(x, y, w, h);
         bool pressed = interactive && ctx.IsMouseDown(x, y, w, h);
+
+        // Sync interaction state for SceneRenderer's dirty detection
+        node._wasHovered = hovered;
+        node._wasPressed = pressed;
 
         // Background (base + optional hover/pressed states)
         uint? bgColor = node.BgColor;
@@ -278,21 +301,31 @@ public static class FlexRenderer
             }
         }
 
-        // Hit test
-        if (node.Action != null)
+        // Hit test — typed widget actions or string actions
+        if (node.WidgetAction.HasValue)
+        {
+            var wa = node.WidgetAction.Value;
+            if (!hasClip)
+                buttons.AddWidget(x, y, w, h, wa.Widget, wa.ActionId, node.ActionCursor);
+            else if (TryIntersectRect(x, y, w, h, clipX, clipY, clipW, clipH, out float bx, out float by, out float bw, out float bh))
+                buttons.AddWidget(bx, by, bw, bh, wa.Widget, wa.ActionId, node.ActionCursor);
+        }
+        else if (node.Action != null)
         {
             if (!hasClip)
-            {
                 buttons.Add(x, y, w, h, node.Action, node.ActionCursor);
-            }
             else if (TryIntersectRect(x, y, w, h, clipX, clipY, clipW, clipH, out float bx, out float by, out float bw, out float bh))
-            {
                 buttons.Add(bx, by, bw, bh, node.Action, node.ActionCursor);
-            }
         }
 
+        // Widget subtree
+        if (node.Widget?._lastBuild != null)
+        {
+            ulong childId = cached ? 0 : Taffy.layout_get_child(tree, id, 0);
+            RenderNode(node.Widget._lastBuild, tree, childId, ctx, buttons, x, y, cached, hasClip, clipX, clipY, clipW, clipH);
+        }
         // Children
-        if (node.Children != null)
+        else if (node.Children != null)
         {
             if (node.Overflow == FlexOverflow.Scroll && node.ScrollState != null)
                 RenderScrollChildren(node, tree, id, ctx, buttons, x, y, w, h, cached, hasClip, clipX, clipY, clipW, clipH);
@@ -426,12 +459,27 @@ public static class FlexRenderer
         float w = node._lw;
         float h = node._lh;
 
-        if (node.Action != null)
+        if (node.WidgetAction.HasValue)
+        {
+            var wa = node.WidgetAction.Value;
+            if (!hasClip)
+                buttons.AddWidget(x, y, w, h, wa.Widget, wa.ActionId, node.ActionCursor);
+            else if (TryIntersectRect(x, y, w, h, clipX, clipY, clipW, clipH, out float bx, out float by, out float bw, out float bh))
+                buttons.AddWidget(bx, by, bw, bh, wa.Widget, wa.ActionId, node.ActionCursor);
+        }
+        else if (node.Action != null)
         {
             if (!hasClip)
                 buttons.Add(x, y, w, h, node.Action, node.ActionCursor);
             else if (TryIntersectRect(x, y, w, h, clipX, clipY, clipW, clipH, out float bx, out float by, out float bw, out float bh))
                 buttons.Add(bx, by, bw, bh, node.Action, node.ActionCursor);
+        }
+
+        // Widget subtree
+        if (node.Widget?._lastBuild != null)
+        {
+            RegisterNode(node.Widget._lastBuild, buttons, x, y, hasClip, clipX, clipY, clipW, clipH);
+            return;
         }
 
         if (node.Children == null) return;
@@ -459,6 +507,26 @@ public static class FlexRenderer
             for (int i = 0; i < node.Children.Count; i++)
                 RegisterNode(node.Children[i], buttons, x, y, hasClip, clipX, clipY, clipW, clipH);
         }
+    }
+
+    /// <summary>
+    /// Walk the tree and rebuild any widgets so _lastBuild is fresh.
+    /// Called on layout cache hit — Taffy is skipped but widgets still need their Build() called.
+    /// </summary>
+    static void RebuildWidgets(FlexNode node, FrameState state)
+    {
+        if (node.Widget != null)
+        {
+            if (!node.Widget._mounted) { node.Widget.OnMount(); node.Widget._mounted = true; }
+            if (node.Widget._needsRedraw) { state.NeedsRedraw = true; node.Widget._needsRedraw = false; }
+            try { node.Widget._lastBuild = node.Widget.Build(state); }
+            catch (Exception ex) { node.Widget._lastBuild = null; CrashReporter.ReportWidgetError(node.Widget.Tag, ex); }
+            if (node.Widget._lastBuild != null)
+                RebuildWidgets(node.Widget._lastBuild, state);
+        }
+        if (node.Children != null)
+            for (int i = 0; i < node.Children.Count; i++)
+                RebuildWidgets(node.Children[i], state);
     }
 
     static byte MapAlign(FlexAlign a) => a switch

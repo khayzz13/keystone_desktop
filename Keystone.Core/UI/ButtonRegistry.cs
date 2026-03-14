@@ -1,15 +1,26 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // ButtonRegistry - Core UI type for hit testing button regions
 
 using System.Collections.Generic;
 using Keystone.Core.Plugins;
 using Keystone.Core.Rendering;
+using Keystone.Core.Widgets;
 
 namespace Keystone.Core.UI;
 
 /// <summary>
 /// Button hitbox for HitTest lookup
 /// </summary>
-public record ButtonHit(float X, float Y, float W, float H, string Action, CursorType Cursor = CursorType.Pointer);
+public readonly record struct ButtonHit(float X, float Y, float W, float H, string Action, CursorType Cursor = CursorType.Pointer);
+
+/// <summary>
+/// Typed widget button hitbox — no string encoding
+/// </summary>
+public readonly record struct WidgetButtonHit(float X, float Y, float W, float H, Widget Widget, int ActionId, CursorType Cursor = CursorType.Pointer);
 
 /// <summary>
 /// Manages button registration per-window for HitTest
@@ -17,14 +28,26 @@ public record ButtonHit(float X, float Y, float W, float H, string Action, Curso
 public class ButtonRegistry
 {
     private readonly List<ButtonHit> _buttons = new();
+    private readonly List<WidgetButtonHit> _widgetButtons = new();
 
-    public void Clear() => _buttons.Clear();
+    public void Clear() { _buttons.Clear(); _widgetButtons.Clear(); }
 
     public void Add(float x, float y, float w, float h, string action, CursorType cursor = CursorType.Pointer)
         => _buttons.Add(new ButtonHit(x, y, w, h, action, cursor));
 
+    public void AddWidget(float x, float y, float w, float h, Widget widget, int actionId, CursorType cursor = CursorType.Pointer)
+        => _widgetButtons.Add(new WidgetButtonHit(x, y, w, h, widget, actionId, cursor));
+
     public HitTestResult? HitTest(float x, float y)
     {
+        // Widget buttons checked first (registered later = higher z-order, but we check both lists)
+        for (int i = _widgetButtons.Count - 1; i >= 0; i--)
+        {
+            var btn = _widgetButtons[i];
+            if (x >= btn.X && x < btn.X + btn.W && y >= btn.Y && y < btn.Y + btn.H)
+                return new HitTestResult(null, btn.Cursor) { WidgetHit = new WidgetAction(btn.Widget, btn.ActionId) };
+        }
+
         for (int i = _buttons.Count - 1; i >= 0; i--)
         {
             var btn = _buttons[i];

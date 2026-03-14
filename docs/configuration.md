@@ -1,6 +1,6 @@
 # Configuration, Window Chrome & Build
 
-> Last updated: 2026-03-03
+> Last updated: 2026-03-07
 
 Keystone uses two configuration files with different responsibilities:
 
@@ -25,6 +25,12 @@ Lives at the root of your app directory. The host searches `keystone.config.json
   "name": "My App",
   "id": "com.example.myapp",
   "version": "1.0.0",
+
+  // Custom URL scheme — stable origin for service workers and Cache Storage
+  "customScheme": true,          // default: false. Registers a WKURLSchemeHandler.
+  "schemeName": "myapp",         // optional override. Default: sanitized id (dots → hyphens).
+                                 // With id "com.example.myapp" → origin "com-example-myapp://app"
+                                 // With schemeName "myapp" → origin "myapp://app"
 
   // Windows to register and optionally spawn on launch
   "windows": [
@@ -195,7 +201,7 @@ When `true`, the window skips GPU context creation and Skia render thread entire
 }
 ```
 
-When `enabled: false` or absent, no Bun process starts. `invoke()` still works (bypasses Bun). `subscribe()`, `query()`, and WebSocket features are unavailable.
+When `enabled: false` or absent, no Bun process starts. `ipc.host.call()` / `invoke()` still works (bypasses Bun). `ipc.subscribe()`, `ipc.bun.query()`, and WebSocket features are unavailable.
 
 `compiledExe` and `compiledWorkerExe` are set by the packager during `--package` — don't set manually.
 
@@ -228,7 +234,9 @@ In ad-hoc/unsigned dev builds, team/signature checks are skipped.
 | `bunRestartBaseDelayMs` | `500` | First retry delay; doubles each attempt |
 | `bunRestartMaxDelayMs` | `30000` | Backoff cap |
 | `webViewAutoReload` | `true` | Reload WKWebView after content process crash |
-| `webViewReloadDelayMs` | `200` | Delay before reload (ms) |
+| `webViewReloadDelayMs` | `200` | Base delay before reload (ms) |
+
+WebView crash recovery uses exponential backoff: `webViewReloadDelayMs * 2^(crashCount-1)`, capped at 30s. After 5 rapid crashes within 60 seconds, recovery stops. The counter resets on successful load.
 
 ### `workers[]`
 
@@ -362,7 +370,7 @@ security: {
 }
 ```
 
-Action allowlisting only affects `action()` via WebSocket — not `invoke()` calls (direct to C#).
+Action allowlisting only affects `ipc.host.action()` / `action()` via WebSocket — not `ipc.host.call()` / `invoke()` calls (direct to C#).
 
 ---
 

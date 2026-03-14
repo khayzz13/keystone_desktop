@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // DisplayLink - CADisplayLink on a dedicated background thread's NSRunLoop
 // Fires off the main thread (like CVDisplayLink did) so WaitForVsync() doesn't deadlock.
 // Main thread uses WaitForVsync(). Render threads subscribe via Subscribe().

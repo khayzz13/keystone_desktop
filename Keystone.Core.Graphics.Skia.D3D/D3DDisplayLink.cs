@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // D3DDisplayLink — VSync timing for Windows via IDXGIOutput::WaitForVBlank().
 // Same broadcast pattern as macOS DisplayLink.cs and TimerDisplayLink.cs.
 // Replaces TimerDisplayLink on Windows with true hardware VSync.

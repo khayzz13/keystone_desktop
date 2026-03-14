@@ -1,4 +1,10 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using Keystone.Core.Rendering;
+using Keystone.Core.Widgets;
 
 namespace Keystone.Core.Plugins;
 
@@ -17,6 +23,12 @@ public class HitTestResult
     /// Cursor to display when hovering this region
     /// </summary>
     public CursorType Cursor { get; set; } = CursorType.Default;
+
+    /// <summary>
+    /// Typed widget action — set when the hit is a widget button.
+    /// Dispatched directly to widget.HandleAction(actionId), no string involved.
+    /// </summary>
+    public WidgetAction? WidgetHit { get; set; }
 
     public HitTestResult() { }
 

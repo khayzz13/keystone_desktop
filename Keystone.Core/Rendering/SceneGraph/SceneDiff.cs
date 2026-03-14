@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // SceneDiff - Tree differ for retained scene graph
 // Compares current frame's tree against previous. Marks changed nodes Dirty.
 // Clean subtrees retain their SKPicture cache.
@@ -59,18 +64,26 @@ public static class SceneDiff
             current.Cache = null;
         }
 
+        // Track which prev children are matched to avoid orphan cache leaks
+        Span<bool> matched = stackalloc bool[prev.Children.Length];
+
         bool anyChildDirty = false;
         for (int i = 0; i < current.Children.Length; i++)
         {
-            var pc = FindMatch(prev.Children, current.Children[i], i);
+            var (pc, prevIdx) = FindMatchWithIndex(prev.Children, current.Children[i], i);
+            if (prevIdx >= 0) matched[prevIdx] = true;
             Diff(pc, current.Children[i]);
             if (current.Children[i].Dirty) anyChildDirty = true;
         }
 
+        // Dispose caches on prev children that weren't matched by any current child
+        for (int i = 0; i < prev.Children.Length; i++)
+            if (!matched[i]) DisposeTreeCaches(prev.Children[i]);
+
         if (anyChildDirty)
         {
             current.Dirty = true;
-            prev.Cache?.Dispose();
+            current.Cache?.Dispose();
             current.Cache = null;
         }
     }
@@ -94,16 +107,16 @@ public static class SceneDiff
         }
     }
 
-    /// <summary>Find matching previous child by Id (if >0) or position index.</summary>
-    static SceneNode? FindMatch(SceneNode[] prevChildren, SceneNode current, int posIndex)
+    /// <summary>Find matching previous child by Id (if >0) or position index. Returns (node, prevIndex).</summary>
+    static (SceneNode? node, int index) FindMatchWithIndex(SceneNode[] prevChildren, SceneNode current, int posIndex)
     {
         if (current.Id > 0)
         {
             for (int i = 0; i < prevChildren.Length; i++)
-                if (prevChildren[i].Id == current.Id) return prevChildren[i];
-            return null;
+                if (prevChildren[i].Id == current.Id) return (prevChildren[i], i);
+            return (null, -1);
         }
-        return posIndex < prevChildren.Length ? prevChildren[posIndex] : null;
+        return posIndex < prevChildren.Length ? (prevChildren[posIndex], posIndex) : (null, -1);
     }
 
     static bool NodesEqual(SceneNode a, SceneNode b) => (a, b) switch

@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // app.ts — Main window component for {{APP_NAME}}
 // This file is auto-bundled and served by the Keystone runtime.
 // It runs inside a WKWebView slot managed by the native window.

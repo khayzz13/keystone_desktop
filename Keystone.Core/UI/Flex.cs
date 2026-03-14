@@ -1,8 +1,14 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // Flex - Declarative flexbox/grid layout builder
 // FlexNode is a flat data bag. FlexRenderer (Platform) computes layout via Taffy and draws via RenderContext.
 
 using Keystone.Core.Plugins;
 using Keystone.Core.Rendering;
+using Keystone.Core.Widgets;
 
 namespace Keystone.Core.UI;
 
@@ -94,6 +100,10 @@ public class FlexNode
     public bool _layoutValid;
     public float _layoutW, _layoutH;
 
+    // Interaction state (set by FlexRenderer, read by SceneRenderer for dirty detection)
+    internal bool _wasHovered;
+    internal bool _wasPressed;
+
     // Image (raster data from Bun — base64 PNG decoded to bytes)
     public byte[]? ImageData;
     public SkiaSharp.SKImage? _imageCached;
@@ -111,6 +121,12 @@ public class FlexNode
     // Web view (WKWebView slot — FlexRenderer positions a WKWebView at this node's rect instead of painting)
     public string? WebViewComponent;  // Bun-served component (URL built from BunPort)
     public string? WebViewUrl;        // External URL (loaded directly)
+
+    // Widget — stateful component that produces a FlexNode subtree each frame
+    public Widget? Widget;
+
+    // Typed widget action — replaces string Action for widget-owned buttons
+    public WidgetAction? WidgetAction;
 
     // Children
     public List<FlexNode>? Children;
@@ -235,4 +251,8 @@ public static class Flex
     /// <summary>External URL WebView slot — WKWebView loads the given URL at this node's rect.</summary>
     public static FlexNode WebExternal(string url)
         => new() { FlexGrow = 1, WebViewUrl = url };
+
+    /// <summary>Embed a stateful widget. The widget produces a FlexNode subtree each frame.</summary>
+    public static FlexNode Widget(Widget widget)
+        => new() { Widget = widget };
 }

@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // LinuxPlatform — GTK4 implementation of IPlatform.
 // Uses P/Invoke into libgtk-4.so and libgdk-4.0.so.
 // All UI operations must happen on the GTK main thread (the calling thread of Initialize).

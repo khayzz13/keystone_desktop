@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // RenderContext - Direct SkiaSharp rendering
 // Fluent API for window plugins
 
@@ -10,6 +15,7 @@ public class RenderContext : IDisposable
     private readonly SKCanvas _canvas;
     private readonly SkiaPaintCache _paints;
     private SKPath? _currentPath;
+    private List<IDisposable>? _nativeResources;
     private bool _disposed;
 
     public FrameState State { get; }
@@ -34,6 +40,15 @@ public class RenderContext : IDisposable
         _canvas = canvas;
         _paints = paints;
         State = state;
+    }
+
+    /// <summary>Track a native SkiaSharp resource for disposal when this context is disposed.
+    /// Centralizes native object lifecycle — prevents leaks from missed Dispose calls.</summary>
+    T Track<T>(T resource) where T : IDisposable
+    {
+        _nativeResources ??= new(4);
+        _nativeResources.Add(resource);
+        return resource;
     }
 
     // === Frame Loop Control ===
@@ -340,11 +355,11 @@ public class RenderContext : IDisposable
         var rad = angle * MathF.PI / 180f;
         var dx = MathF.Cos(rad) * w;
         var dy = MathF.Sin(rad) * h;
-        paint.Shader = SKShader.CreateLinearGradient(
+        paint.Shader = Track(SKShader.CreateLinearGradient(
             new SKPoint(x, y),
             new SKPoint(x + dx, y + dy),
             new[] { SkiaPaintCache.UnpackColor(color1), SkiaPaintCache.UnpackColor(color2) },
-            SKShaderTileMode.Clamp);
+            SKShaderTileMode.Clamp));
         _canvas.DrawRect(x, y, w, h, paint);
         return this;
     }
@@ -352,10 +367,10 @@ public class RenderContext : IDisposable
     public RenderContext RadialGradientCircle(float cx, float cy, float r, uint colorCenter, uint colorEdge)
     {
         using var paint = new SKPaint { IsAntialias = true };
-        paint.Shader = SKShader.CreateRadialGradient(
+        paint.Shader = Track(SKShader.CreateRadialGradient(
             new SKPoint(cx, cy), r,
             new[] { SkiaPaintCache.UnpackColor(colorCenter), SkiaPaintCache.UnpackColor(colorEdge) },
-            SKShaderTileMode.Clamp);
+            SKShaderTileMode.Clamp));
         _canvas.DrawCircle(cx, cy, r, paint);
         return this;
     }
@@ -387,7 +402,7 @@ public class RenderContext : IDisposable
     public RenderContext PushClipRounded(float x, float y, float w, float h, float radius)
     {
         _canvas.Save();
-        var rrect = new SKRoundRect(new SKRect(x, y, x + w, y + h), radius);
+        var rrect = Track(new SKRoundRect(new SKRect(x, y, x + w, y + h), radius));
         _canvas.ClipRoundRect(rrect);
         return this;
     }
@@ -476,5 +491,8 @@ public class RenderContext : IDisposable
         if (_disposed) return;
         _disposed = true;
         _currentPath?.Dispose();
+        if (_nativeResources != null)
+            for (int i = _nativeResources.Count - 1; i >= 0; i--)
+                _nativeResources[i].Dispose();
     }
 }

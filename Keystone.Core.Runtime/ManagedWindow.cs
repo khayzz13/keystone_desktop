@@ -1,11 +1,10 @@
-#if MACOS
-using Keystone.Core.Graphics.Skia;
-using Keystone.Core.Platform.MacOS;
-#else
-using Keystone.Core.Graphics.Skia.Vulkan;
-#endif
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+using System.Diagnostics;
 using Keystone.Core;
-using Keystone.Core.Management;
 using Keystone.Core.Management.Bun;
 using Keystone.Core.Platform;
 using Keystone.Core.Plugins;
@@ -29,15 +28,15 @@ public class ManagedWindow : IDisposable
     private readonly FrameState _frameState;
     private readonly uint _windowId;
     private volatile bool _pendingReload;
+    private readonly Stopwatch _frameClock = Stopwatch.StartNew();
+    private ulong _lastFrameMs;
 
     private INativeWindow? _nativeWindow;
     private object? _gpuSurface; // Platform GPU surface (CAMetalLayer on macOS, VkSurfaceKHR on Linux)
-    private SkiaPaintCache? _paintCache;
-
-    // Per-window render thread + GPU context
-    private WindowRenderThread? _renderThread;
-    private ManualResetEventSlim? _vsyncSignal; // from DisplayLink, for cleanup
     private SceneRenderer? _sceneRenderer;
+
+    // GPU lifecycle — context, VSync, render thread, paint cache
+    private WindowGpuHost? _gpuHost;
 
     private float _scale = 1.0f;
     private uint _width;
@@ -47,119 +46,42 @@ public class ManagedWindow : IDisposable
     private volatile bool _purgeAfterResize;
     private bool _disposed;
 
-    // Shared host WebView — single IWebView per window for all Bun component slots
-    private IWebView? _hostWebView;
-    private bool _hostCreating; // guard against double-creation from render thread
-    private bool _hostReady;
-    private Dictionary<string, (float x, float y, float w, float h)>? _hostSlots;
-    private List<(string key, string scriptUrl, float x, float y, float w, float h)>? _pendingSlots;
-
-    // Invoke handler registry — channel → async handler returning object? result
-    // Registered by ApplicationRuntime for built-in APIs, and by apps for custom channels.
-    private readonly Dictionary<string, Func<System.Text.Json.JsonElement, Task<object?>>> _invokeHandlers = new();
-
-    // Synchronous main-thread invoke handlers — execute inline in DispatchDirectMessage,
-    // no Task.Run. Required for operations that depend on the current NSEvent (e.g. window drag).
-    private readonly Dictionary<string, Func<System.Text.Json.JsonElement, object?>> _mainThreadInvokeHandlers = new();
-
-    /// <summary>
-    /// Register a native handler for invoke() calls from web components.
-    /// Called when JS does: keystone().invoke(channel, args)
-    /// Handler receives the args JsonElement and returns a JSON-serializable result.
-    /// </summary>
-    public void RegisterInvokeHandler(string channel, Func<System.Text.Json.JsonElement, Task<object?>> handler)
-        => _invokeHandlers[channel] = handler;
-
-    /// <summary>
-    /// Register a synchronous handler that runs inline on the main thread (no Task.Run).
-    /// Use for operations that must execute during the same run-loop pass as the triggering
-    /// browser event — e.g. window drag needs the live mouse-down NSEvent.
-    /// </summary>
-    public void RegisterMainThreadInvokeHandler(string channel, Func<System.Text.Json.JsonElement, object?> handler)
-        => _mainThreadInvokeHandlers[channel] = handler;
-
-    /// <summary>
-    /// Called for non-invoke direct messages from JS (postMessage without ks_invoke).
-    /// Direct path — no Bun round-trip. msg is a JSON string.
-    /// </summary>
-    public Action<string>? OnDirectMessage { get; set; }
-
-    /// <summary>
-    /// Entry point for all WKScriptMessageHandler messages from JS.
-    /// If the message has ks_invoke:true, dispatches to the registered handler and replies via Bun push.
-    /// Otherwise falls through to OnDirectMessage.
-    /// </summary>
-    private void DispatchDirectMessage(string msg)
+    /// <summary>Build the base URL for WebView loading — uses custom scheme if enabled, else loopback HTTP.</summary>
+    private string GetBaseUrl(int port)
     {
-        System.Text.Json.JsonDocument? doc = null;
-        try
-        {
-            doc = System.Text.Json.JsonDocument.Parse(msg);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("ks_invoke", out var ksInvoke) && ksInvoke.GetBoolean())
-            {
-                var id = root.GetProperty("id").GetInt32();
-                var channel = root.GetProperty("channel").GetString() ?? "";
-                var windowId = root.TryGetProperty("windowId", out var wid) ? wid.GetString() ?? Id : Id;
-                var args = root.TryGetProperty("args", out var a) ? a : default;
-
-                var replyChannel = $"window:{windowId}:__reply__:{id}";
-
-                // Sync main-thread handlers — execute inline, no Task.Run.
-                // Required for operations that depend on the current NSEvent (e.g. window drag).
-                if (_mainThreadInvokeHandlers.TryGetValue(channel, out var syncHandler))
-                {
-                    try
-                    {
-                        var result = syncHandler(args);
-                        BunManager.Instance.Push(replyChannel, new { result });
-                    }
-                    catch (Exception ex)
-                    {
-                        BunManager.Instance.Push(replyChannel, new { error = ex.Message });
-                    }
-                    return;
-                }
-
-                if (_invokeHandlers.TryGetValue(channel, out var handler))
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            var result = await handler(args);
-                            BunManager.Instance.Push(replyChannel, new { result });
-                        }
-                        catch (Exception ex)
-                        {
-                            BunManager.Instance.Push(replyChannel, new { error = ex.Message });
-                        }
-                    });
-                }
-                else
-                {
-                    BunManager.Instance.Push(replyChannel, new { error = $"No handler registered for channel: {channel}" });
-                }
-                return;
-            }
-        }
-        catch { }
-        finally { doc?.Dispose(); }
-
-        OnDirectMessage?.Invoke(msg);
+        var config = ApplicationRuntime.Instance?.Config;
+        if (config?.CustomScheme == true)
+            return $"{config.ResolvedSchemeName}://app";
+        return $"http://127.0.0.1:{port}";
     }
+
+    // WebView hosting — slots, externals, crash recovery
+    private WindowWebHost? _webHost;
+
+    // Invoke routing — handler registration, dispatch, cancellation
+    private readonly WindowInvokeRouter _invokeRouter;
+
+    public void RegisterInvokeHandler(string channel, Func<System.Text.Json.JsonElement, Task<object?>> handler)
+        => _invokeRouter.RegisterHandler(channel, handler);
+
+    public void RegisterInvokeHandler(string channel, Func<System.Text.Json.JsonElement, CancellationToken, Task<object?>> handler)
+        => _invokeRouter.RegisterHandler(channel, handler);
+
+    public void RegisterMainThreadInvokeHandler(string channel, Func<System.Text.Json.JsonElement, object?> handler)
+        => _invokeRouter.RegisterMainThreadHandler(channel, handler);
+
+    public Action<string>? OnDirectMessage { get => _invokeRouter.OnDirectMessage; set => _invokeRouter.OnDirectMessage = value; }
 
     /// <summary>
     /// Fired when the WKWebView content process terminates unexpectedly.
     /// Subscribe to show a UI indicator or log the event.
     /// If null (default), the window still auto-reloads per ProcessRecoveryConfig.
     /// </summary>
-    public Action? OnWebViewCrash { get; set; }
-
-    // Dedicated WebViews for external URLs (one per unique URL key)
-    private Dictionary<string, IWebView>? _externalWebViews;
-    private Dictionary<string, (float x, float y, float w, float h)>? _externalRects;
+    public Action? OnWebViewCrash
+    {
+        get => _webHost?.OnCrash;
+        set { if (_webHost != null) _webHost.OnCrash = value; }
+    }
 
     // Expose for event coordinate transform
     public float ScaleFactor => _scale;
@@ -167,8 +89,7 @@ public class ManagedWindow : IDisposable
     public uint Height => _height;
     private CursorType _currentCursor = CursorType.Default;
     private volatile bool _needsRedraw = true;
-    private volatile bool _vsyncActive = true;
-    private Action? _dataSubscription; // DataChannel callback — wakes render thread on data arrival
+    private IDisposable? _dataSubscription; // ChannelManager render-wake — wakes render thread on data arrival
 
     // Identity
     public string Id { get; }
@@ -183,7 +104,7 @@ public class ManagedWindow : IDisposable
     public bool IsFullscreen { get; private set; }
 
     public IWindowPlugin GetPlugin() { lock (_pluginLock) return _plugin; }
-    public object? GetGpuContext() => _renderThread?.Gpu;
+    public object? GetGpuContext() => _gpuHost?.GpuContext;
 
     /// <summary>Expected drawable pool bytes for this window's GPU surface.
     /// 3 drawables × width × height × 4 bytes (BGRA).</summary>
@@ -253,6 +174,10 @@ public class ManagedWindow : IDisposable
         _platform = platform;
         WindowType = plugin.WindowType;
         _actionRouter = actionRouter;
+        _invokeRouter = new WindowInvokeRouter(id,
+            (ch, data) => BunManager.Instance.Push(ch, data),
+            js => EvaluateJavaScript(js),
+            action => actionRouter.Execute(action, id));
         _windowId = _nextWindowId++;
         _frameState = new FrameState { WindowId = _windowId, WindowType = plugin.WindowType };
         if (plugin is WindowPluginBase wpb)
@@ -276,18 +201,24 @@ public class ManagedWindow : IDisposable
 
         UpdateSize();
 
+        // WebView hosting
+        _webHost = new WindowWebHost(
+            Id,
+            () => BunManager.Instance.BunPort,
+            () => BunManager.Instance.SessionToken,
+            GetBaseUrl,
+            action => ApplicationRuntime.Instance?.RunOnMainThread(action),
+            windowId => ApplicationRuntime.Instance?.RaiseWebViewCrash(windowId),
+            ApplicationRuntime.Instance?.Config.ProcessRecovery,
+            _invokeRouter.Dispatch,
+            Environment.GetEnvironmentVariable("KEYSTONE_INSPECTABLE") == "1");
+
         // GPU path — platform-specific surface + context creation
         _gpuSurface = nativeWindow.GetGpuSurface();
         if (_gpuSurface != null)
         {
-            var gpu = CreateGpuContext(_gpuSurface, _scale);
-            if (gpu != null)
-            {
-                _paintCache = new SkiaPaintCache();
-                var displayLink = ApplicationRuntime.Instance!.DisplayLink;
-                _vsyncSignal = displayLink.Subscribe();
-                _renderThread = new WindowRenderThread(this, gpu, _vsyncSignal);
-            }
+            _gpuHost = new WindowGpuHost(ApplicationRuntime.Instance!.DisplayLink);
+            _gpuHost.Initialize(_gpuSurface, _scale, this);
         }
 
         // Set up window delegate for live resize
@@ -296,33 +227,14 @@ public class ManagedWindow : IDisposable
         // Subscribe to data channels — RequestRedraw wakes the render thread when data arrives
         var deps = _plugin.Dependencies;
         if (deps != null && deps.Any())
-        {
-            _dataSubscription = RequestRedraw;
-            DataChannel.Subscribe(deps, _dataSubscription);
-        }
+            _dataSubscription = ChannelManager.Instance.Subscribe(deps, RequestRedraw);
 
         // Start render thread
-        _renderThread?.Start();
+        _gpuHost?.Start();
 
         Console.WriteLine($"[ManagedWindow] Created {WindowType} id={Id} size={_width}x{_height} scale={_scale}");
     }
 
-    /// <summary>Create per-window GPU context from platform surface. Returns null if GPU not available.</summary>
-    private static IWindowGpuContext? CreateGpuContext(object gpuSurface, double scale)
-    {
-#if MACOS
-        if (gpuSurface is CoreAnimation.CAMetalLayer metalLayer)
-        {
-            MacOSPlatform.ConfigureMetalLayer(metalLayer, SkiaWindow.Shared.Device, scale);
-            return SkiaWindow.CreateWindowContext();
-        }
-#else
-        // Linux: GdkSurface handle → Vulkan context
-        if (gpuSurface is IntPtr gdkSurface && gdkSurface != IntPtr.Zero)
-            return VulkanSkiaWindow.CreateWindowContext(gdkSurface);
-#endif
-        return null;
-    }
 
     /// <summary>
     /// Read size from platform (main thread only) and update cached fields.
@@ -348,33 +260,28 @@ public class ManagedWindow : IDisposable
     public void RequestRedraw()
     {
         _needsRedraw = true;
-        _vsyncSignal?.Set();
+        _gpuHost?.WakeRenderThread();
     }
 
     /// <summary>Called by render thread: resubscribe to VSync if suspended.</summary>
-    internal void ResumeVSync()
-    {
-        if (_vsyncActive) return;
-        ApplicationRuntime.Instance?.DisplayLink.Resubscribe(_vsyncSignal!);
-        _vsyncActive = true;
-    }
+    internal void ResumeVSync() => _gpuHost?.ResumeVSync();
 
-    /// <summary>Called by render thread: unsubscribe from VSync when idle.
-    /// Data subscriptions call RequestRedraw to wake the thread when new data arrives.</summary>
-    internal void TrySuspendVSync()
-    {
-        if (!_vsyncActive) return;
-        ApplicationRuntime.Instance?.DisplayLink.Unsubscribe(_vsyncSignal!);
-        _vsyncActive = false;
-    }
+    /// <summary>Called by render thread: unsubscribe from VSync when idle.</summary>
+    internal void TrySuspendVSync() => _gpuHost?.TrySuspendVSync();
 
     public bool ShouldRender() => _needsRedraw;
 
-    /// <summary>
-    /// Execute JavaScript in this window's host WebView (fire-and-forget).
-    /// For headless windows, this evaluates the script in the invisible WebKit context.
-    /// </summary>
-    public void EvaluateJavaScript(string js) => _hostWebView?.EvaluateJavaScript(js);
+    public void EvaluateJavaScript(string js) => _webHost?.EvaluateJavaScript(js);
+    public void EvaluateJavaScriptWithResult(string js, Action<string?> completion)
+    {
+        if (_webHost == null) { completion(null); return; }
+        _webHost.EvaluateJavaScriptWithResult(js, completion);
+    }
+    public void SetWebViewInspectable(bool enabled) => _webHost?.SetInspectable(enabled);
+    public Task<string?> GetServiceWorkerStatus() => _webHost?.GetServiceWorkerStatus() ?? Task.FromResult<string?>(null);
+    public void UnregisterServiceWorkers() => _webHost?.UnregisterServiceWorkers();
+    public void ClearServiceWorkerCaches() => _webHost?.ClearServiceWorkerCaches();
+    public void SetNavigationPolicy(Func<string, bool>? policy) => _webHost?.SetNavigationPolicy(policy);
 
     /// <summary>
     /// Render on the per-window thread using its own GpuContext.
@@ -382,7 +289,8 @@ public class ManagedWindow : IDisposable
     /// </summary>
     public void RenderOnThread(IWindowGpuContext gpu)
     {
-        if (_gpuSurface == null || _paintCache == null) return;
+        var paintCache = _gpuHost?.PaintCache;
+        if (_gpuSurface == null || paintCache == null) return;
 
         UpdateSize();
         if (_width == 0 || _height == 0) return;
@@ -405,6 +313,21 @@ public class ManagedWindow : IDisposable
         SyncFrameState();
         _frameState.GpuContext = gpu;
 
+        SceneNode? scene = null;
+        var hasRetainedScene = false;
+
+        lock (_pluginLock)
+        {
+            if (!_pendingReload)
+            {
+                _frameState.WindowTitle = _plugin.WindowTitle;
+                _frameState.NeedsRedraw = false;
+
+                scene = _plugin.BuildScene(_frameState);
+                hasRetainedScene = scene != null;
+            }
+        }
+
         var canvas = gpu.BeginFrame(_gpuSurface, (int)drawW, (int)drawH);
         if (canvas == null) return;
 
@@ -416,19 +339,15 @@ public class ManagedWindow : IDisposable
             {
                 if (!_pendingReload)
                 {
-                    _frameState.WindowTitle = _plugin.WindowTitle;
-                    _frameState.NeedsRedraw = false;
-
-                    var scene = _plugin.BuildScene(_frameState);
-                    if (scene != null)
+                    if (hasRetainedScene && scene != null)
                     {
                         _sceneRenderer ??= new SceneRenderer();
-                        _sceneRenderer.Render(canvas, _paintCache, _frameState, scene);
+                        _sceneRenderer.Render(canvas, paintCache, _frameState, scene);
                         _needsRedraw = _frameState.NeedsRedraw;
                     }
                     else
                     {
-                        using var ctx = new RenderContext(canvas, _paintCache, _frameState);
+                        using var ctx = new RenderContext(canvas, paintCache, _frameState);
                         _plugin.Render(ctx);
                         _needsRedraw = (ctx.Flags & RenderContext.FLAG_NEEDS_REDRAW) != 0;
                     }
@@ -461,6 +380,13 @@ public class ManagedWindow : IDisposable
 
     private void SyncFrameState()
     {
+        // Frame timing
+        ulong nowMs = (ulong)_frameClock.ElapsedMilliseconds;
+        _frameState.DeltaMs = (uint)(nowMs - _lastFrameMs);
+        _frameState.TimeMs = nowMs;
+        _frameState.FrameCount++;
+        _lastFrameMs = nowMs;
+
         _frameState.MouseX = MouseX;
         _frameState.MouseY = MouseY;
         _frameState.MouseDown = MouseDown;
@@ -623,321 +549,35 @@ public class ManagedWindow : IDisposable
         plugin.OnKeyUp?.Invoke(keyCode, modifiers);
     }
 
-    // --- WebView Management (single shared host + dedicated externals) ---
+    // --- WebView Management (delegated to WindowWebHost) ---
 
     private void ProcessWebViewRequests()
     {
         var requests = _frameState.WebViewRequests;
         _frameState.WebViewRequests = null;
-
-        if (_nativeWindow == null) return;
-
-        // Separate into slots (Bun components → shared host) and externals (dedicated WebView)
-        var currentSlotKeys = new HashSet<string>();
-
-        if (requests != null)
-        {
-            foreach (var (key, url, rx, ry, rw, rh, isSlot) in requests)
-            {
-                if (isSlot)
-                {
-                    currentSlotKeys.Add(key);
-                    ProcessSlotRequest(key, url, rx, ry, rw, rh);
-                }
-                else
-                    ProcessExternalRequest(key, url, rx, ry, rw, rh);
-            }
-        }
-
-        // Remove slots that disappeared this frame
-        if (_hostSlots != null)
-        {
-            var removed = new List<string>();
-            foreach (var key in _hostSlots.Keys)
-            {
-                if (!currentSlotKeys.Contains(key))
-                    removed.Add(key);
-            }
-            foreach (var key in removed)
-            {
-                _hostSlots.Remove(key);
-                if (_hostReady && _hostWebView != null)
-                {
-                    var k = key.Replace("'", "\\'");
-                    var js = $"window.__removeSlot('{k}')";
-                    _hostWebView.EvaluateJavaScript(js);
-                }
-            }
-        }
+        if (requests != null && _nativeWindow != null)
+            _webHost?.ProcessRequests(requests, _nativeWindow);
     }
 
-    private void ProcessSlotRequest(string key, string url, float rx, float ry, float rw, float rh)
-    {
-        _hostSlots ??= new();
-
-        // Create shared host WebView if needed
-        if (_hostWebView == null)
-        {
-            var port = BunManager.Instance.BunPort;
-            if (port <= 0) return;
-
-            // Queue this slot for when host is ready
-            _pendingSlots ??= new();
-            if (!_hostSlots.ContainsKey(key))
-            {
-                _hostSlots[key] = (rx, ry, rw, rh);
-                _pendingSlots.Add((key, $"/web/{key}.js", rx, ry, rw, rh));
-            }
-
-            // Guard: only create once (render thread may call before main thread completes)
-            if (_hostCreating) return;
-            _hostCreating = true;
-
-            _nativeWindow!.CreateWebView(webView =>
-            {
-                try
-                {
-                    webView.InjectScriptOnLoad($"window.__KEYSTONE_PORT__ = {port};");
-                    webView.AddMessageHandler("keystone", msg => DispatchDirectMessage(msg));
-                    webView.SetTransparentBackground();
-                    webView.OnCrash = () => OnHostWebViewCrash();
-                    webView.LoadUrl($"http://127.0.0.1:{port}/__host__");
-
-                    _hostWebView = webView;
-                    PollHostReady();
-
-                    Console.WriteLine($"[ManagedWindow] Shared host WebView created for window {Id}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[ManagedWindow] Host WebView failed: {ex.Message}");
-                }
-            });
-            return;
-        }
-
-        if (_hostSlots.TryGetValue(key, out var last))
-        {
-            // Already exists — reposition if changed
-            if (Math.Abs(last.x - rx) > 0.5f || Math.Abs(last.y - ry) > 0.5f ||
-                Math.Abs(last.w - rw) > 0.5f || Math.Abs(last.h - rh) > 0.5f)
-            {
-                _hostSlots[key] = (rx, ry, rw, rh);
-                if (_hostReady)
-                {
-                    var k = key.Replace("'", "\\'");
-                    var js = $"window.__moveSlot('{k}',{rx:F0},{ry:F0},{rw:F0},{rh:F0})";
-                    _hostWebView!.EvaluateJavaScript(js);
-                }
-            }
-        }
-        else
-        {
-            // New slot
-            _hostSlots[key] = (rx, ry, rw, rh);
-            if (_hostReady)
-            {
-                AddSlotToHost(key, rx, ry, rw, rh);
-            }
-            else
-            {
-                _pendingSlots ??= new();
-                _pendingSlots.Add((key, $"/web/{key}.js", rx, ry, rw, rh));
-            }
-        }
-    }
-
-    private void AddSlotToHost(string key, float x, float y, float w, float h)
-    {
-        if (_hostWebView == null) return;
-        var k = key.Replace("'", "\\'");
-        var wid = Id.Replace("'", "\\'");
-        var scriptUrl = $"/web/{k}.js";
-        var js = $"window.__addSlot('{k}','{scriptUrl}',{x:F0},{y:F0},{w:F0},{h:F0},'{wid}')";
-        _hostWebView.EvaluateJavaScript(js);
-    }
-
-    /// <summary>
-    /// Web-only window path (renderless: true). Bypasses BuildScene/Flex/slot machinery.
-    /// Creates a full-window WebView loading the component URL directly from the Bun HTTP server.
-    /// </summary>
     public void LoadWebComponent(string component, int port)
-    {
-        _nativeWindow!.CreateWebView(wv =>
-        {
-            try
-            {
-                wv.InjectScriptOnLoad($"window.__KEYSTONE_PORT__ = {port};");
-                wv.AddMessageHandler("keystone", msg => DispatchDirectMessage(msg));
-                wv.SetTransparentBackground();
-                wv.OnCrash = () => LoadWebComponent(component, port);
-                wv.LoadUrl($"http://127.0.0.1:{port}/{component}?windowId={Id}");
-                _hostWebView = wv;
-                Console.WriteLine($"[ManagedWindow] Web-only WebView loaded: {component} id={Id}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[ManagedWindow] Web-only WebView failed: {ex.Message}");
-            }
-        });
-    }
+        => _webHost!.LoadWebComponent(component, port, _nativeWindow!);
 
-    /// <summary>
-    /// Called by IWebView.OnCrash when the WebKit content process terminates.
-    /// Fires OnWebViewCrash (app-layer hook), then reloads after the configured delay.
-    /// </summary>
-    private void OnHostWebViewCrash()
-    {
-        OnWebViewCrash?.Invoke();
-        ApplicationRuntime.Instance?.RaiseWebViewCrash(Id);
+    public void LoadExternalUrl(string url, int port)
+        => _webHost!.LoadExternalUrl(url, port, _nativeWindow!);
 
-        var cfg = ApplicationRuntime.Instance?.Config.ProcessRecovery;
-        if (cfg?.WebViewAutoReload != false)
-        {
-            var delayMs = cfg?.WebViewReloadDelayMs ?? 200;
-            _hostReady = false;
-            _hostSlots?.Clear();
-            _pendingSlots = null;
-
-            Task.Run(async () =>
-            {
-                await Task.Delay(delayMs);
-                ApplicationRuntime.Instance?.RunOnMainThread(() =>
-                {
-                    if (_disposed || _hostWebView == null) return;
-                    var port = BunManager.Instance.BunPort;
-                    if (port <= 0) return;
-                    _hostWebView.LoadUrl($"http://127.0.0.1:{port}/__host__");
-                    PollHostReady();
-                    Console.WriteLine($"[ManagedWindow] Reloading WebView for window {Id} after content process crash");
-                });
-            });
-        }
-    }
-
-    /// <summary>Hot-swap a named slot's component in place without reloading the host page.</summary>
-    public void HotSwapSlot(string key)
-    {
-        if (_hostWebView == null || !_hostReady) return;
-        var k = key.Replace("'", "\\'");
-        var js = $"window.__hotSwapSlot('{k}','/web/{k}.js')";
-        _hostWebView.EvaluateJavaScript(js);
-    }
-
-    private void PollHostReady()
-    {
-        if (_disposed || _hostReady || _hostWebView == null) return;
-        _hostWebView.EvaluateJavaScriptBool("window.__ready === true", ready =>
-        {
-            if (ready)
-            {
-                _hostReady = true;
-                FlushPendingSlots();
-            }
-            else
-            {
-                Task.Run(async () =>
-                {
-                    await Task.Delay(50);
-                    ApplicationRuntime.Instance?.RunOnMainThread(PollHostReady);
-                });
-            }
-        });
-    }
-
-    private void FlushPendingSlots()
-    {
-        if (_pendingSlots == null) return;
-        foreach (var (key, _, x, y, w, h) in _pendingSlots)
-            AddSlotToHost(key, x, y, w, h);
-        _pendingSlots = null;
-        Console.WriteLine($"[ManagedWindow] Host ready, flushed {_hostSlots?.Count ?? 0} slots for window {Id}");
-    }
-
-    private void ProcessExternalRequest(string key, string url, float rx, float ry, float rw, float rh)
-    {
-        _externalWebViews ??= new();
-        _externalRects ??= new();
-
-        if (_externalRects.TryGetValue(key, out var last))
-        {
-            if (Math.Abs(last.x - rx) > 0.5f || Math.Abs(last.y - ry) > 0.5f ||
-                Math.Abs(last.w - rw) > 0.5f || Math.Abs(last.h - rh) > 0.5f)
-            {
-                _externalRects[key] = (rx, ry, rw, rh);
-                if (_externalWebViews.TryGetValue(key, out var wv))
-                    wv.SetFrame(rx, ry, rw, rh);
-            }
-        }
-        else
-        {
-            _externalRects[key] = (rx, ry, rw, rh);
-            var capturedUrl = url;
-            var capturedKey = key;
-            var port = BunManager.Instance.BunPort;
-
-            _nativeWindow!.CreateWebView(webView =>
-            {
-                try
-                {
-                    if (port > 0)
-                        webView.InjectScriptOnLoad($"window.__KEYSTONE_PORT__ = {port};");
-                    webView.SetFrame(rx, ry, rw, rh);
-                    webView.LoadUrl(capturedUrl);
-                    _externalWebViews![capturedKey] = webView;
-                    Console.WriteLine($"[ManagedWindow] External WebView created: {capturedKey} in window {Id}");
-                }
-                catch (Exception ex)
-                {
-                    _externalRects?.Remove(capturedKey);
-                    Console.WriteLine($"[ManagedWindow] External WebView failed: {ex.Message}");
-                }
-            });
-        }
-    }
-
-    private void DisposeWebViews()
-    {
-        // Dispose shared host WebView
-        if (_hostWebView != null)
-        {
-            _hostWebView.RemoveMessageHandler("keystone");
-            _hostWebView.Dispose();
-            _hostWebView = null;
-            _hostReady = false;
-        }
-        _hostSlots?.Clear();
-        _pendingSlots = null;
-
-        // Dispose external WebViews
-        if (_externalWebViews != null)
-        {
-            foreach (var (_, wv) in _externalWebViews)
-                wv.Dispose();
-            _externalWebViews.Clear();
-        }
-        _externalRects?.Clear();
-    }
+    public void HotSwapSlot(string key) => _webHost?.HotSwapSlot(key);
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
-        if (_dataSubscription != null)
-            DataChannel.Unsubscribe(_dataSubscription);
-        _renderThread?.Dispose();
-        DisposeWebViews();
+        _dataSubscription?.Dispose();
+        _gpuHost?.Dispose();
+        _webHost?.Dispose();
         _sceneRenderer?.Dispose();
-        if (_vsyncSignal != null)
-        {
-            ApplicationRuntime.Instance?.DisplayLink.Unsubscribe(_vsyncSignal);
-            _vsyncSignal.Dispose();
-        }
         _nativeWindow?.Dispose();
         (_plugin as IDisposable)?.Dispose();
-        _paintCache?.Dispose();
-        OnDirectMessage = null;
-        OnWebViewCrash = null;
+        _invokeRouter.Dispose();
         OnShowOverlay = null;
         OnCloseOverlay = null;
         OnTabDraggedOut = null;

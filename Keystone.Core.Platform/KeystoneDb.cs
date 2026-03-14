@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // KeystoneDb - SQLite persistence for workspaces, layouts, settings, and app-defined tables
 // DB: ~/.keystone/{appId}/keystone.db
 

@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 import React, { useEffect, useState } from "react";
 import { keystone } from "@keystone/sdk/bridge";
 import type { MediaFile } from "../hooks/useLibrary";

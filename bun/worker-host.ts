@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // worker-host.ts — Keystone Bun Worker Runtime
 // Stripped-down version of host.ts for worker processes. Reads config from env vars
 // instead of keystone.config.ts. No web component bundling, no HMR, no static serving.
@@ -8,6 +13,8 @@ import { join } from "path";
 import type { ServerWebSocket } from "bun";
 import type { Request, ServiceContext, WorkerConnection } from "./types";
 import { store } from "./lib/store";
+import { HandlerRegistry } from "./lib/handler-registry";
+import { createIpcFacade, type IpcFacade } from "./lib/ipc";
 
 const WORKER_NAME = Bun.env.KEYSTONE_WORKER_NAME!;
 const SERVICES_DIR = Bun.env.KEYSTONE_SERVICES_DIR!;
@@ -15,6 +22,7 @@ const BROWSER_ACCESS = Bun.env.KEYSTONE_BROWSER_ACCESS === "true";
 const APP_ROOT = Bun.env.KEYSTONE_APP_ROOT!;
 const IS_EXTENSION_HOST = Bun.env.KEYSTONE_EXTENSION_HOST === "true";
 const ALLOWED_CHANNELS = (Bun.env.KEYSTONE_ALLOWED_CHANNELS ?? "").split(",").filter(Boolean);
+const WS_TOKEN = Bun.env.KEYSTONE_SESSION_TOKEN ?? '';
 
 // === Network endpoint allow-list ===
 
@@ -39,7 +47,7 @@ const originalFetch = globalThis.fetch;
 (globalThis as any).__KEYSTONE_ORIGINAL_FETCH__ = originalFetch;
 
 if (networkMode === "allowlist") {
-  globalThis.fetch = function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  globalThis.fetch = Object.assign(function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const hostPort = url.port && url.port !== "443" && url.port !== "80"
       ? `${url.hostname}:${url.port}` : url.hostname;
@@ -47,7 +55,7 @@ if (networkMode === "allowlist") {
       throw new Error(`[network-policy] ${url.hostname} is not in the allowed endpoints list`);
     }
     return originalFetch(input, init);
-  };
+  }, { preconnect: originalFetch.preconnect }) as typeof fetch;
 }
 
 process.title = `keystone-worker:${WORKER_NAME}`;
@@ -56,12 +64,36 @@ process.env.KEYSTONE_APP_ROOT = APP_ROOT;
 // === Registries ===
 
 const actionHandlers = new Map<string, (action: string) => void>();
-const webMessageHandlers = new Map<string, (data: any, ws: ServerWebSocket) => void | Promise<void>>();
-const invokeHandlers = new Map<string, (args: any) => any | Promise<any>>();
+const webMessageHandlers = new HandlerRegistry<(data: any, ws: ServerWebSocket) => void | Promise<void>>();
+const hostPushHandlers = new Map<string, ((data: any) => void)[]>();
+const invokeHandlers = new HandlerRegistry<(args: any, signal?: AbortSignal) => any | Promise<any>>();
+const inflightOps = new Map<number, AbortController>();
+
+// Tracks which service is currently being started — used as handler ownership key.
+let currentServiceOwner = "__worker__";
+
+// Host query callbacks — Worker→C# request/reply via relay through main
+let hostQueryNextId = 1;
+const hostQueryCallbacks = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+
+function hostQuery(service: string, args?: any): Promise<any> {
+  const id = hostQueryNextId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      hostQueryCallbacks.delete(id);
+      reject(new Error(`hostQuery("${service}") timed out after 30s`));
+    }, 30_000);
+    hostQueryCallbacks.set(id, {
+      resolve(v) { clearTimeout(timer); resolve(v); },
+      reject(e) { clearTimeout(timer); reject(e); },
+    });
+    console.log(JSON.stringify({ id, type: "query_host", service, args }));
+  });
+}
 
 type ServiceEntry = {
   mod: any;
-  query: (args?: any) => any;
+  query: (args?: any, signal?: AbortSignal) => any;
   stop?: () => void;
   health?: () => { ok: boolean; [k: string]: any };
 };
@@ -82,6 +114,9 @@ let serverRef: { publish: (topic: string, data: string) => void; port: number } 
 
 let workerPorts: Record<string, number> = {};
 
+// Server-side value retention — last value per channel, replayed to new WS clients on connect
+const valueCache = new Map<string, string>();
+
 // === ServiceContext ===
 
 function makePush(): ServiceContext["push"] {
@@ -97,6 +132,8 @@ function makePush(): ServiceContext["push"] {
     serverRef.publish(channel, JSON.stringify({ type: channel, data }));
   };
 }
+
+// pushValue is created inline after `push` to avoid a redundant makePush() closure.
 
 function connectToWorker(name: string): WorkerConnection {
   const port = workerPorts[name];
@@ -159,22 +196,64 @@ function connectToWorker(name: string): WorkerConnection {
   };
 }
 
-const ctx: ServiceContext = {
+const push = makePush();
+const pushValue: ServiceContext["pushValue"] = (channel, data) => {
+  valueCache.set(channel, JSON.stringify({ type: channel, data }));
+  push(channel, data);
+};
+
+// Cached worker connections for ipc.worker(name).call() round-trip
+const workerConnections = new Map<string, WorkerConnection>();
+function getWorkerConnection(name: string): WorkerConnection {
+  let conn = workerConnections.get(name);
+  if (!conn) {
+    conn = connectToWorker(name);
+    workerConnections.set(name, conn);
+  }
+  return conn;
+}
+
+const ipc: IpcFacade = createIpcFacade({
   call: async (service, args) => {
     const svc = services.get(service);
     if (!svc) throw new Error(`Unknown service: ${service}`);
     return await svc.query?.(args);
   },
-  push: makePush(),
-  onWebMessage: (type, handler) => { webMessageHandlers.set(type, handler); },
-  registerInvokeHandler: (channel, handler) => { invokeHandlers.set(channel, handler); },
+  push,
+  pushValue,
   relay: (target, channel, data) => {
     console.log(JSON.stringify({ type: "relay", target, channel, data }));
   },
+  hostQuery,
+  hostAction: (action) => {
+    console.log(JSON.stringify({ type: "action_from_web", action }));
+  },
+  workerQuery: (name, service, args) => getWorkerConnection(name).query(service, args),
+});
+
+const ctx: ServiceContext = {
+  call: ipc.call,
+  push,
+  pushValue,
+  onWebMessage: (type, handler) => { webMessageHandlers.register(type, handler, currentServiceOwner); },
+  onHostPush: (channel, handler) => {
+    const arr = hostPushHandlers.get(channel);
+    if (arr) arr.push(handler);
+    else hostPushHandlers.set(channel, [handler]);
+  },
+  registerInvokeHandler: (channel, handler) => { invokeHandlers.register(channel, handler, currentServiceOwner); },
+  relay: (target, channel, data) => {
+    console.log(JSON.stringify({ type: "relay", target, channel, data }));
+  },
+  registerHttpHandler: () => { /* no HTTP server in workers */ },
+  registerBinaryWebSocket: () => { /* no HTTP server in workers */ },
+  openStream: () => { throw new Error("openStream not available in workers"); },
+  onStream: () => { /* no binary socket in workers */ },
   workers: {
     connect: connectToWorker,
     ports: () => workerPorts,
   },
+  ipc,
 };
 
 // === Built-in services ===
@@ -205,7 +284,8 @@ async function discoverServices() {
     for (const [name, mod] of Object.entries(compiled) as [string, any][]) {
       mergeServiceNetwork(name, mod);
       if (mod.start) {
-        await mod.start(ctx);
+        currentServiceOwner = name;
+        try { await mod.start(ctx); } finally { currentServiceOwner = "__worker__"; }
         services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
       }
       if (mod.onAction) actionHandlers.set(name, mod.onAction);
@@ -230,7 +310,8 @@ async function discoverServices() {
     } else continue;
     mergeServiceNetwork(name, mod);
     if (mod.start) {
-      await mod.start(ctx);
+      currentServiceOwner = name;
+      try { await mod.start(ctx); } finally { currentServiceOwner = "__worker__"; }
       services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
     }
     if (mod.onAction) actionHandlers.set(name, mod.onAction);
@@ -255,12 +336,19 @@ if (BROWSER_ACCESS) {
     hostname: "127.0.0.1",
     port: 0,
     fetch(req, srv) {
-      if (new URL(req.url).pathname === "/ws")
+      const url = new URL(req.url);
+      if (url.pathname === "/ws") {
+        if (url.searchParams.get("token") !== WS_TOKEN)
+          return new Response("", { status: 401 });
         return srv.upgrade(req) ? undefined : new Response("", { status: 400 });
+      }
       return new Response("Not found", { status: 404 });
     },
     websocket: {
-      open(ws: ServerWebSocket) { ws.subscribe("all"); },
+      open(ws: ServerWebSocket) {
+        ws.subscribe("all");
+        for (const cached of valueCache.values()) ws.send(cached);
+      },
       message(ws: ServerWebSocket, msg: string | Buffer) {
         try {
           const { type, data } = JSON.parse(msg as string);
@@ -279,27 +367,47 @@ async function handleWebMessage(ws: ServerWebSocket, type: string, data: any) {
     return;
   }
   if (type === "query" && data?.service) {
+    const id = data.id;
+    const ac = new AbortController();
+    inflightOps.set(id, ac);
     try {
       const svc = services.get(data.service);
       if (!svc) throw new Error(`Unknown service: ${data.service}`);
-      const result = await svc.query?.(data.args ?? {});
-      ws.send(JSON.stringify({ type: "__query_result__", id: data.id, result }));
+      const result = await svc.query?.(data.args ?? {}, ac.signal);
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__query_result__", id, result }));
     } catch (e: any) {
-      ws.send(JSON.stringify({ type: "__query_result__", id: data.id, error: e.message }));
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__query_result__", id, error: { code: e.name === 'AbortError' ? "cancelled" : "handler_error", message: e.message } }));
+    } finally {
+      inflightOps.delete(id);
     }
     return;
   }
   if (type === "invoke" && data?.channel) {
     const handler = invokeHandlers.get(data.channel);
-    const replyChannel = data.replyChannel;
-    if (!replyChannel) return;
-    try {
-      if (!handler) throw new Error(`No invoke handler registered for: ${data.channel}`);
-      const result = await handler(data.args ?? {});
-      ws.send(JSON.stringify({ type: replyChannel, data: { result } }));
-    } catch (e: any) {
-      ws.send(JSON.stringify({ type: replyChannel, data: { error: e.message } }));
+    const id = data.id;
+    if (!handler) {
+      ws.send(JSON.stringify({ type: "__invoke_reply__", id, error: { code: "handler_not_found", message: `No invoke handler: ${data.channel}` } }));
+      return;
     }
+    const ac = new AbortController();
+    inflightOps.set(id, ac);
+    try {
+      const result = await handler(data.args ?? {}, ac.signal);
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__invoke_reply__", id, result }));
+    } catch (e: any) {
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__invoke_reply__", id, error: { code: e.name === 'AbortError' ? "cancelled" : "handler_error", message: e.message } }));
+    } finally {
+      inflightOps.delete(id);
+    }
+    return;
+  }
+  if (type === "__cancel__" && data?.id) {
+    const ac = inflightOps.get(data.id);
+    if (ac) { ac.abort(); inflightOps.delete(data.id); }
     return;
   }
   const customHandler = webMessageHandlers.get(type);
@@ -353,7 +461,16 @@ setInterval(async () => {
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const req = JSON.parse(line) as Request;
+        const req = JSON.parse(line);
+
+        // Host query response — C# replying to a Worker→C# query_host request
+        if (req.id && !req.type && hostQueryCallbacks.has(req.id)) {
+          const cb = hostQueryCallbacks.get(req.id)!;
+          hostQueryCallbacks.delete(req.id);
+          if (req.error) cb.reject(new Error(typeof req.error === "string" ? req.error : req.error.message));
+          else cb.resolve(req.result);
+          continue;
+        }
 
         if (req.type === "shutdown") {
           for (const [, svc] of services) svc.stop?.();
@@ -368,7 +485,7 @@ setInterval(async () => {
         if (req.type === "query") {
           const svc = services.get(req.service);
           if (!svc) {
-            console.log(JSON.stringify({ id: req.id, error: `Unknown service: ${req.service}` }));
+            console.log(JSON.stringify({ id: req.id, error: { code: "service_not_found", message: `Unknown service: ${req.service}` } }));
             continue;
           }
           const result = await svc.query?.(req.args ?? {});
@@ -390,6 +507,12 @@ setInterval(async () => {
           serverRef.publish(req.channel, JSON.stringify({ type: req.channel, data: req.data }));
         }
 
+        else if (req.type === "push_value") {
+          const msg = JSON.stringify({ type: req.channel, data: req.data });
+          valueCache.set(req.channel, msg);
+          serverRef.publish(req.channel, msg);
+        }
+
         else if (req.type === "relay_in") {
           // Incoming relay from another worker via C# — dispatch to local services as a push
           serverRef.publish(req.channel, JSON.stringify({ type: req.channel, data: req.data }));
@@ -400,7 +523,7 @@ setInterval(async () => {
 
         else if (req.type === "eval") {
           if (IS_EXTENSION_HOST) {
-            console.log(JSON.stringify({ id: req.id, error: "eval disabled in extension host" }));
+            console.log(JSON.stringify({ id: req.id, error: { code: "capability_denied", message: "eval disabled in extension host" } }));
           } else {
             const result = await eval(req.code);
             console.log(JSON.stringify({ id: req.id, result }));
@@ -408,7 +531,7 @@ setInterval(async () => {
         }
 
       } catch (e: any) {
-        console.log(JSON.stringify({ id: 0, error: e.message }));
+        console.log(JSON.stringify({ id: 0, error: { code: "handler_error", message: e.message } }));
       }
     }
   }

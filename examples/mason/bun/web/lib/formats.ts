@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // formats.ts — Browser-native format detection.
 // Native formats play directly via <audio>/<video> with no transcoding needed.
 // Everything else goes through the hw-transcode (AVFoundation) or ffmpeg worker path.

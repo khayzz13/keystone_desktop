@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // @keystone/config — App-side configuration for the Keystone Bun runtime
 // Users create a keystone.config.ts in their bun root that exports a config object.
 // The runtime loads this at startup to determine behavior.

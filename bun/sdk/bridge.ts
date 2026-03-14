@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // @keystone/bridge — Client-side SDK for Keystone web components
 // Framework-agnostic. Runs in the browser (WKWebView).
 // Connects to the Bun runtime via WebSocket, providing typed access to
@@ -17,19 +22,48 @@ export type Theme = {
   font: string;
 };
 
+export interface BrowserStream {
+  send(data: ArrayBuffer | Uint8Array): void;
+  onMessage(handler: (data: ArrayBuffer) => void): void;
+  close(): void;
+  readonly ready: Promise<void>;
+}
+
+export interface BrowserIpcFacade {
+  /** C# host — direct postMessage, fastest path */
+  host: {
+    call<T = any>(channel: string, args?: any, options?: { signal?: AbortSignal }): Promise<T>;
+    action(action: string): void;
+  };
+  /** Bun services — via WebSocket */
+  bun: {
+    /** Invoke a named handler (.handle() in defineService) */
+    call<T = any>(channel: string, args?: any, options?: { signal?: AbortSignal }): Promise<T>;
+    /** Query a service's .query() method */
+    query<T = any>(service: string, args?: any, options?: { signal?: AbortSignal }): Promise<T>;
+  };
+  /** Binary stream — connects to Bun via /ws-bin WebSocket */
+  stream: {
+    open(channel: string): BrowserStream;
+  };
+  /** Channel pub/sub — WebSocket topic fan-out */
+  subscribe(channel: string, callback: (data: any) => void): () => void;
+  publish(channel: string, data?: any): void;
+}
+
 export type KeystoneClient = {
   /** Dispatch an action to the C# host and all connected Bun services */
   action: (action: string) => void;
   /** Subscribe to a named data channel. Returns an unsubscribe function. */
   subscribe: (channel: string, callback: (data: any) => void) => () => void;
   /** Query a Bun service by name. Returns a promise with the result. */
-  query: (service: string, args?: any) => Promise<any>;
+  query: (service: string, args?: any, options?: { signal?: AbortSignal }) => Promise<any>;
   /**
    * Invoke a native C# handler by channel name. Returns a promise with the reply.
    * Sends via window.webkit.messageHandlers.keystone (zero Bun round-trip).
    * C# registers handlers via ManagedWindow.RegisterInvokeHandler(channel, fn).
    */
-  invoke: <T = any>(channel: string, args?: any) => Promise<T>;
+  invoke: <T = any>(channel: string, args?: any, options?: { signal?: AbortSignal }) => Promise<T>;
   /** Publish data to a channel. All subscribers (any window) receive it immediately. */
   publish: (channel: string, data?: any) => void;
   /** Send a raw typed message over the WebSocket bridge */
@@ -50,6 +84,11 @@ export type KeystoneClient = {
   windowId: string;
 };
 
+// === Timeout Constants ===
+
+const QUERY_TIMEOUT_MS = 10_000;
+const INVOKE_TIMEOUT_MS = 15_000;
+
 // === State ===
 
 let ws: WebSocket | null = null;
@@ -68,10 +107,34 @@ const themeCallbacks = new Set<(theme: Theme) => void>();
 
 // === Invoke state ===
 // invoke() sends { ks_invoke, id, channel, args } via postMessage to C#.
-// C# replies by pushing to the WS channel "window:{windowId}:__reply__:{id}".
-// The reply subscription is one-shot: unsubscribed immediately after resolution.
+// C# replies direct via EvaluateJavaScript → __ks_dr__(), or falls back to
+// the per-window control channel with { type: "__invoke_reply__", id, result/error }.
+// invokeBun() sends { type: "invoke", id, channel, args } via WS.
+// Bun replies with { type: "__invoke_reply__", id, result/error } on the same WS connection.
 let _invokeId = 0;
 const _windowId: string = (window as any).__KEYSTONE_SLOT_CTX__?.windowId ?? '';
+const _ctrlChannel = _windowId ? `window:${_windowId}:__ctrl__` : '';
+const invokeCallbacks = new Map<number, { resolve: (r: any) => void; reject: (e: Error) => void }>();
+
+function resolveInvokeCallback(id: number, data: any) {
+  const cb = invokeCallbacks.get(id);
+  if (!cb) return;
+  invokeCallbacks.delete(id);
+  if (data?.error) {
+    const err = new Error(typeof data.error === 'string' ? data.error : data.error.message ?? 'Unknown error');
+    if (typeof data.error === 'object' && data.error.code) (err as any).code = data.error.code;
+    cb.reject(err);
+  } else {
+    cb.resolve(data?.result);
+  }
+}
+
+// Direct invoke reply receiver — C# calls this via EvaluateJavaScript to bypass Bun relay
+(window as any).__ks_dr__ = (msg: any) => {
+  if (typeof msg === 'string') msg = JSON.parse(msg);
+  if (msg.type === '__invoke_reply__' && typeof msg.id === 'number')
+    resolveInvokeCallback(msg.id, msg);
+};
 
 // === Default theme (matches C# Theme.cs defaults) ===
 
@@ -90,10 +153,15 @@ const theme: Theme = {
 
 function connect(port: number) {
   _port = port;
-  ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const token = (window as any).__KEYSTONE_SESSION_TOKEN__ ?? '';
+  ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
 
   ws.onopen = () => {
     _connected = true;
+    // Auto-subscribe to per-window control channel for invoke replies + window events
+    if (_windowId) {
+      ws!.send(JSON.stringify({ type: 'subscribe', data: { channel: _ctrlChannel } }));
+    }
     for (const channel of pendingSubs) {
       ws!.send(JSON.stringify({ type: 'subscribe', data: { channel } }));
     }
@@ -124,13 +192,33 @@ function connect(port: number) {
 
       // __hmr__ is handled by the slot host or shell directly — bridge ignores it
 
+      // Invoke reply — from both C# (via ctrl channel) and Bun (direct WS)
+      if (msg.type === '__invoke_reply__' && typeof msg.id === 'number') {
+        resolveInvokeCallback(msg.id, msg);
+        return;
+      }
+
       if (msg.type === '__query_result__' && typeof msg.id === 'number') {
         const cb = queryCallbacks.get(msg.id);
         if (cb) {
           queryCallbacks.delete(msg.id);
-          if (msg.error) cb.reject(new Error(msg.error));
-          else cb.resolve(msg.result);
+          if (msg.error) {
+            const err = new Error(typeof msg.error === 'string' ? msg.error : msg.error.message ?? 'Query error');
+            if (typeof msg.error === 'object' && msg.error.code) (err as any).code = msg.error.code;
+            cb.reject(err);
+          } else {
+            cb.resolve(msg.result);
+          }
         }
+        return;
+      }
+
+      // Per-window control channel — multiplexed: invoke replies, window events, etc.
+      if (_ctrlChannel && msg.type === _ctrlChannel && msg.data) {
+        if (msg.data.type === '__invoke_reply__' && typeof msg.data.id === 'number') {
+          resolveInvokeCallback(msg.data.id, msg.data);
+        }
+        // Future: other per-window events can be dispatched here
         return;
       }
 
@@ -288,6 +376,10 @@ export function keystone(): KeystoneClient {
 
   _instance = {
     action(action: string) {
+      // Direct to C# via postMessage — works even without Bun WS
+      const wk = (window as any).webkit?.messageHandlers?.keystone;
+      if (wk) wk.postMessage(JSON.stringify({ ks_action: true, action, windowId: _windowId }));
+      // Also broadcast via WS for Bun service action handlers
       if (_connected) ws?.send(JSON.stringify({ type: 'action', data: { action } }));
     },
 
@@ -308,7 +400,7 @@ export function keystone(): KeystoneClient {
       return () => { set.delete(callback); };
     },
 
-    async query(service: string, args?: any): Promise<any> {
+    async query(service: string, args?: any, options?: { signal?: AbortSignal }): Promise<any> {
       return new Promise((resolve, reject) => {
         const id = ++_queryId;
         queryCallbacks.set(id, { resolve, reject });
@@ -317,38 +409,60 @@ export function keystone(): KeystoneClient {
         } else {
           pendingQueries.push({ id, service, args });
         }
+
+        if (options?.signal) {
+          options.signal.addEventListener('abort', () => {
+            if (queryCallbacks.delete(id)) {
+              const err = new Error('query cancelled');
+              (err as any).code = 'cancelled';
+              reject(err);
+              if (_connected) ws?.send(JSON.stringify({ type: '__cancel__', data: { id } }));
+            }
+          }, { once: true });
+        }
+
         setTimeout(() => {
           if (queryCallbacks.delete(id)) reject(new Error(`Query timeout: ${service}`));
-        }, 10_000);
+        }, QUERY_TIMEOUT_MS);
       });
     },
 
-    invoke<T = any>(channel: string, args?: any): Promise<T> {
+    invoke<T = any>(channel: string, args?: any, options?: { signal?: AbortSignal }): Promise<T> {
       return new Promise((resolve, reject) => {
         const id = ++_invokeId;
-        const replyChannel = `window:${_windowId}:__reply__:${id}`;
 
-        // One-shot subscription on the WS reply channel
-        const unsub = _instance!.subscribe(replyChannel, (data: any) => {
-          unsub();
-          if (data?.error) reject(new Error(data.error));
-          else resolve(data?.result as T);
-        });
+        invokeCallbacks.set(id, { resolve: resolve as any, reject });
 
         // Send via direct postMessage to C# (no Bun round-trip)
         const wk = (window as any).webkit?.messageHandlers?.keystone;
         if (wk) {
           wk.postMessage(JSON.stringify({ ks_invoke: true, id, channel, args, windowId: _windowId }));
         } else {
-          unsub();
+          invokeCallbacks.delete(id);
           reject(new Error('invoke() requires WKWebView (webkit.messageHandlers not available)'));
           return;
         }
 
+        // Cancellation via AbortSignal
+        if (options?.signal) {
+          options.signal.addEventListener('abort', () => {
+            if (invokeCallbacks.delete(id)) {
+              const err = new Error('invoke cancelled');
+              (err as any).code = 'cancelled';
+              reject(err);
+              // Notify C# of cancellation
+              wk.postMessage(JSON.stringify({ ks_cancel: true, id, windowId: _windowId }));
+            }
+          }, { once: true });
+        }
+
         setTimeout(() => {
-          unsub();
-          reject(new Error(`invoke timeout: ${channel}`));
-        }, 15_000);
+          if (invokeCallbacks.delete(id)) {
+            const err = new Error(`invoke timeout: ${channel}`);
+            (err as any).code = 'timeout';
+            reject(err);
+          }
+        }, INVOKE_TIMEOUT_MS);
       });
     },
 
@@ -385,6 +499,47 @@ export function keystone(): KeystoneClient {
 
   return _instance;
 }
+
+// === Unified IPC facade ===
+// Plane-oriented API matching the Bun service-side and C#-side IPC facades.
+// Wraps existing functions — no new wire protocol.
+
+export const ipc: BrowserIpcFacade = {
+  host: {
+    call: <T = any>(channel: string, args?: any, options?: { signal?: AbortSignal }) =>
+      keystone().invoke<T>(channel, args, options),
+    action: (action: string) => keystone().action(action),
+  },
+  bun: {
+    call: <T = any>(channel: string, args?: any, options?: { signal?: AbortSignal }) =>
+      invokeBun<T>(channel, args, options),
+    query: <T = any>(service: string, args?: any, options?: { signal?: AbortSignal }) =>
+      keystone().query(service, args, options),
+  },
+  stream: {
+    open(channel: string): BrowserStream {
+      const token = (window as any).__KEYSTONE_SESSION_TOKEN__ ?? '';
+      const ws = new WebSocket(`ws://127.0.0.1:${_port}/ws-bin?channel=${encodeURIComponent(channel)}&token=${token}`);
+      ws.binaryType = "arraybuffer";
+      let messageHandler: ((data: ArrayBuffer) => void) | null = null;
+      const ready = new Promise<void>((resolve, reject) => {
+        ws.onopen = () => resolve();
+        ws.onerror = (e) => reject(e);
+      });
+      ws.onmessage = (e) => { if (messageHandler && e.data instanceof ArrayBuffer) messageHandler(e.data); };
+      return {
+        send: (data) => ws.send(data),
+        onMessage: (handler) => { messageHandler = handler; },
+        close: () => ws.close(),
+        ready,
+      };
+    },
+  },
+  subscribe: (channel: string, callback: (data: any) => void) =>
+    keystone().subscribe(channel, callback),
+  publish: (channel: string, data?: any) =>
+    keystone().publish(channel, data),
+};
 
 // === Typed native API namespaces ===
 // These wrap invoke() and action() with named, framework-native APIs.
@@ -433,6 +588,14 @@ export type WindowEvent =
   | 'focus' | 'blur' | 'minimize' | 'restore'
   | 'enter-full-screen' | 'leave-full-screen'
   | 'moved' | 'resized';
+
+export type ContextMenuInfo = {
+  linkUrl: string | null;
+  imageUrl: string | null;
+  selectedText: string | null;
+  isEditable: boolean;
+  x: number; y: number;
+};
 
 export const nativeWindow = {
   /** Set the title of the current native window */
@@ -518,6 +681,26 @@ export const nativeWindow = {
       if (payload?.type === event) callback(payload.data);
     });
   },
+
+  // ── DevTools ─────────────────────────────────────────────────────
+
+  /** Enable/disable Safari Web Inspector for this window's WebView */
+  setInspectable: (enabled: boolean): Promise<void> =>
+    keystone().invoke('webview:setInspectable', { enabled }),
+
+  // ── Context Menu ─────────────────────────────────────────────────
+
+  /** Subscribe to right-click context menu events. Default browser menu is suppressed. */
+  onContextMenu(callback: (info: ContextMenuInfo) => void): () => void {
+    return keystone().subscribe(`window:${_windowId}:contextmenu`, callback);
+  },
+
+  /** Show a native OS context menu (NSMenu on macOS). Actions route through the action system. */
+  showContextMenu: (
+    items: Array<{ label: string; action: string } | 'separator'>,
+    position: { x: number; y: number }
+  ): Promise<void> =>
+    keystone().invoke('window:showContextMenu', { items, ...position }),
 };
 
 export const dialog = {
@@ -652,6 +835,83 @@ export const headless = {
     keystone().invoke('headless:close', { windowId }),
 };
 
+// === Web Workers ===
+// Headless window workers with structured postMessage/onMessage communication.
+// Unlike raw headless windows, WebWorkers provide bidirectional messaging via
+// WebSocket pub/sub (no C# round-trip for messages) and evaluate() with return values.
+
+export class WebWorker {
+  readonly id: string;
+  readonly component: string;
+  private _handlers = new Set<(data: any) => void>();
+  private _unsub: (() => void) | null = null;
+  private _terminated = false;
+
+  /** @internal — use webWorker.spawn() */
+  constructor(id: string, component: string) {
+    this.id = id;
+    this.component = component;
+    this._unsub = keystone().subscribe(`worker:${id}:out`, (data: any) => {
+      for (const h of this._handlers) h(data);
+    });
+  }
+
+  /** Send structured data to the worker. */
+  postMessage(data: any): void {
+    if (this._terminated) return;
+    keystone().publish(`worker:${this.id}:in`, data);
+  }
+
+  /** Subscribe to messages from the worker. Returns unsubscribe fn. */
+  onMessage(callback: (data: any) => void): () => void {
+    this._handlers.add(callback);
+    return () => this._handlers.delete(callback);
+  }
+
+  /** Evaluate JS in the worker's WebView and return the string result. */
+  evaluate<T = any>(js: string): Promise<T> {
+    return keystone().invoke('worker:evaluate', { workerId: this.id, js });
+  }
+
+  /** Terminate the worker. */
+  async terminate(): Promise<void> {
+    this._terminated = true;
+    this._unsub?.();
+    this._handlers.clear();
+    await keystone().invoke('worker:terminate', { workerId: this.id });
+  }
+}
+
+export const webWorker = {
+  /** Spawn a web worker running the given component in a headless window. */
+  spawn: async (component: string): Promise<WebWorker> => {
+    const id = await keystone().invoke<string>('worker:spawn', { component });
+    return new WebWorker(id, component);
+  },
+  /** List all active web worker IDs. */
+  list: (): Promise<string[]> => keystone().invoke('worker:list'),
+};
+
+/** For use inside a worker component — send/receive messages to/from the parent. */
+export const workerSelf = {
+  /** Send a message to the parent that spawned this worker. */
+  postMessage: (data: any): void => {
+    keystone().publish(`worker:${keystone().windowId}:out`, data);
+  },
+  /** Subscribe to messages from the parent. Returns unsubscribe fn. */
+  onMessage: (callback: (data: any) => void): () => void => {
+    return keystone().subscribe(`worker:${keystone().windowId}:in`, callback);
+  },
+};
+
+export type ServiceWorkerStatus = {
+  active: boolean;
+  waiting: boolean;
+  installing: boolean;
+  scope: string | null;
+  scriptURL: string | null;
+};
+
 export const platform = {
   /** Current platform identifier */
   get os(): 'macos' | 'linux' | 'windows' {
@@ -666,15 +926,84 @@ export const platform = {
       'fullscreen', 'opacity', 'minMaxSize', 'aspectRatio',
       'contentProtection', 'clickThrough', 'singleInstance',
       'protocolHandler', 'openFile', 'openUrl', 'parentChild',
+      'customScheme', 'navigationPolicy', 'requestInterception',
+      'diagnostics', 'crashReporting', 'webWorker',
     ]);
     return supported.has(feature);
   },
+
+  // ── Browser Service Worker Management ──────────────────────────────
+
+  /** Get browser service worker registration status for this window's origin */
+  swStatus: (): Promise<ServiceWorkerStatus> =>
+    keystone().invoke('sw:status'),
+  /** Unregister all browser service workers for this origin */
+  swUnregister: (): Promise<void> =>
+    keystone().invoke('sw:unregister'),
+  /** Clear all Cache Storage entries for this origin */
+  swClearCaches: (): Promise<void> =>
+    keystone().invoke('sw:clearCaches'),
+};
+
+
+// === Diagnostics / Observability ===
+
+export type CrashEvent = {
+  kind: string;
+  timestamp: string;
+  message: string | null;
+  stackTrace: string | null;
+  processId: number;
+  extra: Record<string, string> | null;
+};
+
+export type HealthSummary = {
+  uptimeMs: number;
+  memoryBytes: number;
+  bunRunning: boolean;
+  windowCount: number;
+  recentCrashes: number;
+};
+
+export const diagnostics = {
+  /** Get recent crash events (kept in memory, last 100) */
+  getCrashes: (): Promise<CrashEvent[]> =>
+    keystone().invoke('diagnostics:crashes'),
+  /** Subscribe to crash events in real-time */
+  onCrash: (callback: (event: CrashEvent) => void): (() => void) =>
+    keystone().subscribe('diagnostics:crash', callback),
+  /** Get current process health summary */
+  health: (): Promise<HealthSummary> =>
+    keystone().invoke('diagnostics:health'),
+};
+
+// === Request Interception ===
+
+export type RequestInterceptRule = {
+  /** URL substring to match against */
+  pattern: string;
+  /** What to do: "block" (403), "redirect" (302 to target), "allow" (pass through) */
+  action: 'block' | 'redirect' | 'allow';
+  /** Redirect target URL (required when action is "redirect") */
+  target?: string;
+};
+
+export const webview = {
+  /** Set URL patterns to block via navigation policy (blocks all navigation to matching URLs) */
+  setNavigationPolicy: (blocked: string[]): Promise<void> =>
+    keystone().invoke('webview:setNavigationPolicy', { blocked }),
+  /**
+   * Set request interception rules (requires customScheme: true in config).
+   * Rules are evaluated in order — first match wins. Unmatched requests proxy to Bun normally.
+   */
+  setRequestInterceptor: (rules: RequestInterceptRule[]): Promise<void> =>
+    keystone().invoke('webview:setRequestInterceptor', { rules }),
 };
 
 // Convenience re-exports
 export const action = (a: string) => keystone().action(a);
 export const subscribe = (ch: string, cb: (data: any) => void) => keystone().subscribe(ch, cb);
-export const query = (svc: string, args?: any) => keystone().query(svc, args);
+export const query = (svc: string, args?: any, options?: { signal?: AbortSignal }) => keystone().query(svc, args, options);
 export const invoke = <T = any>(channel: string, args?: any) => keystone().invoke<T>(channel, args);
 
 /**
@@ -688,25 +1017,32 @@ export const invoke = <T = any>(channel: string, args?: any) => keystone().invok
  * Browser:
  *   const notes = await invokeBun<Note[]>("notes:getAll");
  */
-let _bunInvokeId = 0;
-
-export function invokeBun<T = any>(channel: string, args?: any): Promise<T> {
+export function invokeBun<T = any>(channel: string, args?: any, options?: { signal?: AbortSignal }): Promise<T> {
   const ks = keystone();
   return new Promise((resolve, reject) => {
-    const id = ++_bunInvokeId;
-    const replyChannel = `__bun_invoke_reply__:${id}`;
+    const id = ++_invokeId;
 
-    const unsub = ks.subscribe(replyChannel, (data: any) => {
-      unsub();
-      if (data?.error) reject(new Error(data.error));
-      else resolve(data?.result as T);
-    });
+    invokeCallbacks.set(id, { resolve: resolve as any, reject });
 
-    ks.send("invoke", { channel, args, replyChannel });
+    ks.send("invoke", { id, channel, args });
+
+    if (options?.signal) {
+      options.signal.addEventListener('abort', () => {
+        if (invokeCallbacks.delete(id)) {
+          const err = new Error('invokeBun cancelled');
+          (err as any).code = 'cancelled';
+          reject(err);
+          ks.send("__cancel__", { id });
+        }
+      }, { once: true });
+    }
 
     setTimeout(() => {
-      unsub();
-      reject(new Error(`invokeBun timeout: ${channel}`));
-    }, 15_000);
+      if (invokeCallbacks.delete(id)) {
+        const err = new Error(`invokeBun timeout: ${channel}`);
+        (err as any).code = 'timeout';
+        reject(err);
+      }
+    }, INVOKE_TIMEOUT_MS);
   });
 }

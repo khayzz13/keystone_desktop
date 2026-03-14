@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using System;
 using System.IO;
 using Keystone.Core;
@@ -12,6 +17,21 @@ class Program
     {
         // Tee stdout/stderr to log file for Dev Console
         SetupLogging();
+
+        // Global exception handlers — capture unhandled crashes as structured artifacts
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            var ex = e.ExceptionObject as Exception;
+            CrashReporter.Report("unhandled_exception", ex);
+            Console.Error.WriteLine($"[Keystone] Unhandled: {ex}");
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            CrashReporter.Report("unobserved_task", e.Exception);
+            Console.Error.WriteLine($"[Keystone] Unobserved task: {e.Exception}");
+            e.SetObserved();
+        };
+
         Console.WriteLine("[Keystone] Starting...");
 
         // Resolve paths relative to executable
@@ -77,8 +97,8 @@ class Program
     private static void SetupLogging()
     {
         var logPath = Environment.GetEnvironmentVariable("KEYSTONE_LOG")
-            ?? Path.Combine(Path.GetTempPath(), "keystone.log");
-        var logStream = new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+            ?? Path.Combine(Path.GetTempPath(), $"keystone-{DateTime.Now:yyyyMMdd}.log");
+        var logStream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read);
         var logWriter = new StreamWriter(logStream) { AutoFlush = true };
         Console.SetOut(new TeeTextWriter(Console.Out, logWriter));
         Console.SetError(new TeeTextWriter(Console.Error, logWriter));

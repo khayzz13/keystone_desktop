@@ -1,6 +1,6 @@
 # Bun Layer
 
-> Last updated: 2026-02-26
+> Last updated: 2026-03-07
 
 The Bun layer is the TypeScript runtime — a subprocess managed by C#. It discovers and runs service modules, bundles and serves web components with HMR, and provides a WebSocket bridge between browser and backend. Bun's built-in bundler means no webpack/vite/esbuild configuration.
 
@@ -382,8 +382,9 @@ Every handler receives a `ServiceHandle` with scoped utilities:
 type ServiceHandle = {
     ctx: ServiceContext;         // raw runtime context
     store: StoreHandle;          // namespaced SQLite key-value store
-    call: (service, args?) => Promise<any>;   // query another service
-    push: (channel, data) => void;            // broadcast to all subscribers
+    ipc: IpcFacade;              // unified IPC — ipc.host, ipc.worker(), ipc.web, ipc.call()
+    call: (service, args?) => Promise<any>;   // query another service (alias for ipc.call)
+    push: (channel, data) => void;            // broadcast to all subscribers (alias for ipc.web.push)
     fetch: typeof globalThis.fetch;           // policy-enforced fetch (or unrestricted if declared)
 };
 ```
@@ -398,7 +399,9 @@ svc.push("metrics:cpu", { percent: 72.4, cores: 8 });
 
 Web components subscribe:
 ```typescript
-subscribe("metrics:cpu", (data) => {
+import { ipc } from "@keystone/sdk/bridge";
+
+ipc.subscribe("metrics:cpu", (data) => {
     gauge.textContent = `${data.percent.toFixed(1)}%`;
 });
 ```
@@ -438,12 +441,10 @@ Values are JSON-serialized — any JSON-compatible type works.
 **From TypeScript (web layer):**
 
 ```typescript
-import { query } from "@keystone/sdk/bridge";
+import { ipc } from "@keystone/sdk/bridge";
 
-const weather = await query("weather", { city: "San Francisco" });
-
-const ks = keystone();
-const files = await ks.query("file-scanner", { dir: "/home/user/Documents" });
+const weather = await ipc.bun.query("weather", { city: "San Francisco" });
+const files = await ipc.bun.query("file-scanner", { dir: "/home/user/Documents" });
 ```
 
 **From C#:**
@@ -680,6 +681,7 @@ type HostContext = {
   registerInvokeHandler: (channel: string, handler: (args: any) => any) => void;
   onWebMessage: (type: string, handler: (data: any) => void) => void;
   push: (channel: string, data: any) => void;
+  ipc: IpcFacade;                               // unified IPC facade
   readonly services: ReadonlyMap<string, ServiceModule>;
   readonly config: ResolvedConfig;
 };
@@ -718,7 +720,7 @@ export default defineHost({
 });
 ```
 
-Browser calls this via `invokeBun("app:getConfig")`.
+Browser calls this via `ipc.bun.call("app:getConfig")` (or the legacy `invokeBun("app:getConfig")`).
 
 `bun/host.ts` changes require a process restart — the file is not hot-reloaded.
 
@@ -797,7 +799,7 @@ All workers communicate through C# via stdin/stdout NDJSON — the same protocol
 
 ```typescript
 // Worker → Worker
-ctx.relay("data-processor", "task:start", { job: "backfill", range: "2024-01" });
+ctx.relay("task-runner", "task:start", { job: "reindex", range: "2024-01" });
 ```
 
 Flow: Worker writes relay JSON to stdout → C# routes through `BunWorkerManager.Route()` → C# writes to target worker stdin → target dispatches locally.
@@ -810,15 +812,17 @@ Main Bun → Worker: `ctx.relay("data-processor", "channel", data)`.
 When a worker has `browserAccess: true`, it runs a WebSocket server on `127.0.0.1` (random port). Other workers and main Bun can connect directly — bypassing C# entirely. This is the high-throughput path.
 
 ```typescript
+// Using the IPC facade (preferred):
+export async function start(ctx: ServiceContext) {
+    const result = await ctx.ipc.worker("data-processor").call("heavy-compute", { data: bigPayload });
+    ctx.ipc.worker("data-processor").push("task:enqueue", { job: "cleanup" });
+}
+
+// Using ctx.workers.connect() directly (for subscriptions, fine-grained control):
 export async function start(ctx: ServiceContext) {
     const dp = ctx.workers.connect("data-processor");
-
     const result = await dp.query("heavy-compute", { data: bigPayload });
-
-    dp.subscribe("ticks:realtime", (tick) => {
-        processTick(tick);
-    });
-
+    dp.subscribe("events:stream", (event) => processEvent(event));
     dp.send("task:enqueue", { job: "cleanup" });
 }
 ```

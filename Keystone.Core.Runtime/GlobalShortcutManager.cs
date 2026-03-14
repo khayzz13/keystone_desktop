@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // GlobalShortcutManager — process-wide keyboard shortcut registration.
 // On hotkey fire, pushes to channel "hotkey:{accelerator}" via BunManager
 // so any subscribed window receives it via hotkey.on() in the browser SDK.

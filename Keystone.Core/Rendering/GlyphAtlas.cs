@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // GlyphAtlas - Pre-baked glyph texture atlas for fast text rendering
 // Build once per (font, size) pair. Draw text as DrawImage blits from the atlas.
 // Numeric atlas: "0123456789.,-+$% " (17 glyphs) — for zero-alloc number rendering

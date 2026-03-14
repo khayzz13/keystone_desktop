@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // WindowsGlobalShortcut — global hotkey via Win32 RegisterHotKey / WM_HOTKEY.
 // Runs a dedicated message-pump thread to receive WM_HOTKEY messages.
 // No special permissions required on Windows.

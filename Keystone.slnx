@@ -8,7 +8,4 @@
     <Project Path="Keystone.Toolkit/Keystone.Toolkit.csproj" />
     <Project Path="Keystone.App/Keystone.App.csproj" />
   </Folder>
-  <Folder Name="/Examples/Mason/">
-    <Project Path="examples/mason/app/Mason.Core.csproj" />
-  </Folder>
 </Solution>

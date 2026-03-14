@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // store — Namespaced key-value store backed by Bun's native SQLite
 // Survives hot-reloads. Each service gets its own namespace.
 // DB path is resolved relative to the app root (passed via APP_ROOT env or fallback).

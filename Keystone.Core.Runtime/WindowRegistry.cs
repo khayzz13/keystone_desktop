@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // Window Registry - Tracks window types and their rendering metadata
 // Apps register window types at startup (via ICorePlugin or keystone.json).
 // PluginRegistry handles plugin instances; this stores static metadata per type.

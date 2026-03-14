@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // BunWorkerManager — Registry and lifecycle coordinator for Bun worker processes.
 // Workers communicate with C# via stdin/stdout NDJSON (same protocol as main Bun).
 // Cross-worker routing goes through C#. Direct WebSocket connections are opt-in

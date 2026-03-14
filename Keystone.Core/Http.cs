@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // HTTP bridge types — shared between Keystone.Core (interfaces) and Keystone.Core.Management (implementation).
 //
 // These types represent the request/response model for the HTTP-over-invoke() bridge.

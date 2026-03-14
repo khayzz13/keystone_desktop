@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // SvgPathParser - Parses SVG path `d` attribute into RenderContext draw commands
 // Supports: M/m L/l H/h V/v Q/q C/c Z/z (absolute + relative)
 // Extracted from Icons.cs for reuse by FlexRenderer (Bun SVG path primitive)

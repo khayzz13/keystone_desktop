@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 import { defineService } from "@keystone/sdk/service";
 import { readdir, stat } from "node:fs/promises";
 import { join, extname, basename } from "node:path";

@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // LinuxWebView — WebKitGTK implementation of IWebView.
 // P/Invoke into libwebkit2gtk-4.1.so (WebKit2GTK 4.1 API, the current stable).
 // Same WebKit engine as macOS WKWebView — JS bridge works identically.
@@ -59,6 +64,22 @@ public class LinuxWebView : IWebView
         if (_webView != IntPtr.Zero)
             WebKit.WebViewEvaluateJavaScript(_webView, js, -1,
                 IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, null, IntPtr.Zero);
+    }
+
+    public void EvaluateJavaScript(string js, Action<string?> completion)
+    {
+        if (_webView == IntPtr.Zero) { completion(null); return; }
+
+        GtkCallbacks.GAsyncReadyCallback callback = (source, result, _) =>
+        {
+            var jsResult = WebKit.WebViewEvaluateJavaScriptFinish(source, result, IntPtr.Zero);
+            var str = jsResult != IntPtr.Zero ? WebKit.JscValueToString(jsResult) : null;
+            completion(str);
+        };
+        var handle = GCHandle.Alloc(callback);
+        _pinnedDelegates.Add(handle);
+        WebKit.WebViewEvaluateJavaScript(_webView, js, -1,
+            IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero);
     }
 
     public void EvaluateJavaScriptBool(string js, Action<bool> completion)

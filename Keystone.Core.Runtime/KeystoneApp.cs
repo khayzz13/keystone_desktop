@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // KeystoneApp — Fluent builder API for creating Keystone applications
 // Sugar on top of KeystoneConfig + ApplicationRuntime.
 // Equivalent to writing a keystone.json, but from C# code.

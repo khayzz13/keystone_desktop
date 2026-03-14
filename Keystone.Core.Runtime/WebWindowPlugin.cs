@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // WebWindowPlugin — built-in window plugin for config-declared web windows.
 // titleBarStyle "toolkit": borderless, GPU title bar (close/minimize/float/tabs) + optional toolbar + web content.
 // titleBarStyle "toolkit-native": titled window with native controls + GPU title bar (tabs/float only) + web content.

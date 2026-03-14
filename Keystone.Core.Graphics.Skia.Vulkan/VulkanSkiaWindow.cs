@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // VulkanSkiaWindow — Shared Vulkan device holder + VulkanGpuContext factory.
 // Equivalent of SkiaWindow.cs (Metal). The VkDevice is thread-safe (shared).
 // Each window creates its own VulkanGpuContext with its own swapchain + GRContext.

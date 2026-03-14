@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // ScriptManager - Hot-reload .csx scripts for rapid prototyping
 
 using System;
@@ -270,7 +275,7 @@ public class ScriptManager
     {
         var opts = ScriptOptions.Default
             .AddReferences(typeof(RenderContext).Assembly)
-            .AddReferences(typeof(Process).Assembly)
+            .AddReferences(typeof(System.Diagnostics.Process).Assembly)
             .AddImports(
                 "System", "System.Collections.Generic", "System.Linq",
                 "System.Threading", "System.Diagnostics",
@@ -310,7 +315,7 @@ public class ScriptManager
                 .FirstOrDefault(a => a.GetName().Name == "Keystone.Core.Runtime");
 
             var opts = ScriptOptions.Default
-                .AddReferences(typeof(Process).Assembly, typeof(JsonSerializer).Assembly)
+                .AddReferences(typeof(System.Diagnostics.Process).Assembly, typeof(JsonSerializer).Assembly)
                 .AddImports("System", "System.Diagnostics", "System.Text.Json", "System.Collections.Generic");
 
             if (runtimeAsm != null)

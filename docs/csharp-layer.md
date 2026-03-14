@@ -1,6 +1,6 @@
 # C# Layer
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-14
 
 The C# host is Keystone's main process — the equivalent of Electron's main process, written in C#. You get the full .NET 10 standard library, direct P/Invoke to platform frameworks (AppKit/Metal on macOS, GTK4/Vulkan on Linux), and native threads with real memory ownership.
 
@@ -54,6 +54,14 @@ public interface ICoreContext
     event Action<int>? OnBunCrash;        // Bun subprocess exited unexpectedly
     event Action<int>? OnBunRestart;      // Bun restarted successfully
     event Action<string>? OnWebViewCrash; // WebKit content process crashed
+    event Action<CrashEvent>? OnCrash;    // unified crash event (all sources)
+
+    // System events
+    event Action? OnSystemWillSleep;      // lid close, forced sleep
+    event Action? OnSystemDidWake;        // wake from sleep
+    event Action<string[], string>? OnSecondInstance; // second app launch (argv, cwd)
+    event Action<string[]>? OnOpenUrls;   // OS opened URLs with this app
+    event Action<string>? OnOpenFile;     // OS opened a file with this app
 
     // Custom action handling
     Action<string, string>? OnUnhandledAction { set; }
@@ -62,8 +70,24 @@ public interface ICoreContext
     void RunOnMainThread(Action action);
     void RunOnMainThreadAndWait(Action action);
 
-    // Bun bridge
+    // Idle sleep prevention
+    object? BeginPreventSleep(string reason);
+    void EndPreventSleep(object? token);
+
+    // Unified IPC facade (preferred)
+    IIpcFacade Ipc { get; }
+
+    // Bun bridge (low-level)
     IBunService Bun { get; }
+
+    // Bun worker processes
+    IBunWorkerManager Workers { get; }
+
+    // Named thread pools
+    IThreadPoolManager ThreadPools { get; }
+
+    // Unified channel system (typed pub/sub, render-wake, alerts)
+    IChannelManager Channels { get; }
 
     // HTTP-style route router
     IHttpRouter Http { get; }
@@ -140,6 +164,10 @@ window.RegisterInvokeHandler("myapp:readFile", async args =>
 ```
 
 ```typescript
+// Preferred — unified IPC facade
+const content = await ipc.host.call<string>("myapp:readFile", { path: "/etc/hosts" });
+
+// Legacy alias (still works)
 const content = await invoke<string>("myapp:readFile", { path: "/etc/hosts" });
 ```
 
@@ -196,8 +224,12 @@ context.OnUnhandledAction = (action, source) =>
 ```
 
 ```typescript
+// Preferred — unified IPC facade
+ipc.host.action("myapp:new-document");
+ipc.host.action("myapp:export-pdf");
+
+// Legacy alias (still works)
 action("myapp:new-document");
-action("myapp:export-pdf");
 ```
 
 ---
@@ -243,28 +275,22 @@ public abstract class WindowPluginBase : IWindowPlugin
 ```csharp
 public override SceneNode? BuildScene(FrameState state)
 {
-    return new FlexNode
+    _buttons.Clear();
+    return new FlexGroupNode
     {
-        Direction = FlexDirection.Column,
-        Background = Theme.BgSurface,
-        Padding = 24,
-        Gap = 16,
-        Children =
-        [
-            new TextNode($"CPU: {_cpuPercent:F1}%")
-            {
-                FontSize = 28,
-                Color = Theme.TextPrimary,
-                FontWeight = 600
-            },
+        Id = 1,
+        Root = Flex.Column(gap: 16, pad: 24,
+            Flex.Text($"CPU: {_cpuPercent:F1}%", 28, Colors.TextPrimary, FontId.Bold),
             new FlexNode
             {
                 Height = 4,
                 Width = _cpuPercent / 100f * state.Width,
-                Background = Theme.Accent,
-                Radius = 2
+                BgColor = Colors.Accent,
+                BgRadius = 2
             }
-        ]
+        ),
+        X = 0, Y = 0, W = state.Width, H = state.Height,
+        Buttons = _buttons
     };
 }
 ```
@@ -344,6 +370,154 @@ public Action<ushort, KeyModifiers>? OnKeyDown =>
     };
 ```
 
+### Animation
+
+Value-level animation primitives in `Keystone.Core.Animation`, integrated with the frame loop via `FrameState`.
+
+**ValueAnimator** — scalar tween with configurable easing:
+
+```csharp
+readonly ValueAnimator _fade = new(from: 0, to: 1, durationMs: 300, Easing.CubicOut);
+
+public override SceneNode? BuildScene(FrameState state)
+{
+    if (!_fade.IsActive && shouldFadeIn) _fade.Start(state.TimeMs);
+    float opacity = AnimationFrame.Sample(state, _fade); // keeps NeedsRedraw while active
+    // use opacity in scene...
+}
+```
+
+**SpringAnimator** — spring physics for interactive elements:
+
+```csharp
+readonly SpringAnimator _scroll = new(stiffness: 300, damping: 20);
+
+public override SceneNode? BuildScene(FrameState state)
+{
+    _scroll.Target = targetPosition;
+    float pos = AnimationFrame.Sample(state, _scroll); // steps physics, keeps NeedsRedraw while unsettled
+    // use pos in scene...
+}
+```
+
+`AnimationFrame.Sample()` is the integration point — it samples the animator and keeps `state.NeedsRedraw = true` while the animation is active, so the render loop continues until the animation settles.
+
+Easing functions: `Linear`, `CubicIn/Out/InOut`, `QuadIn/Out/InOut`, `BounceIn/Out`, `ElasticIn/Out`, `BackIn/Out`.
+
+**Transition\<T\>** — state-driven animation. Declares "when this value changes, animate from old to new." The primary way animations get used in practice:
+
+```csharp
+readonly Transition<float> _width = new(300, Easing.CubicOut);
+readonly Transition<uint> _bg = new(200, Easing.CubicInOut);
+
+public override SceneNode? BuildScene(FrameState state)
+{
+    _width.Set(visible ? 48f : 0f, state.TimeMs);
+    _bg.Set(selected ? 0x6a8abcffu : 0x2a2a36ffu, state.TimeMs);
+
+    float w = _width.Sample(state); // animates on change, snaps if same
+    uint bg = _bg.Sample(state);
+}
+```
+
+Generic over value type — float and uint (color) have built-in lerps. Custom types pass a lerp function:
+
+```csharp
+readonly Transition<MyPoint> _pos = new(400, lerp: (a, b, t) =>
+    new MyPoint(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t));
+```
+
+Retargeting is automatic — calling `Set()` mid-animation captures the current interpolated position as the new "from" and restarts toward the new target. `Snap()` jumps immediately without animation.
+
+**Composition** — combine animators into sequences, parallel groups, or delayed chains:
+
+```csharp
+var fadeIn = new ValueAnimator(0, 1, 300, Easing.CubicOut);
+var slideUp = new ValueAnimator(20, 0, 400, Easing.CubicOut);
+
+// Fluent API
+var entrance = fadeIn.With(slideUp);              // run both simultaneously
+var staggered = fadeIn.Then(slideUp);             // run in sequence
+var delayed = fadeIn.After(200);                  // wait 200ms, then fade
+
+// Or construct directly
+var seq = new AnimationSequence(fadeIn, slideUp);
+var par = new AnimationParallel(fadeIn, slideUp);
+var del = new AnimationDelay(200, fadeIn);
+```
+
+All composition types implement `IAnimator` — they compose recursively.
+
+### Widgets
+
+Stateful, reusable UI components (`Keystone.Core.Widgets`). A widget owns its state, handles its own actions, and produces a `FlexNode` subtree each frame. The framework handles lifecycle and action routing.
+
+Action routing is fully typed — integer action IDs, not strings. Widget subclasses define action IDs as constants and set `FlexNode.WidgetAction` to pair the widget reference with the ID. No string encoding, no parsing.
+
+```csharp
+public class MyDropdown : Widget
+{
+    const int Toggle = 1;
+
+    bool _isOpen;
+    public string[] Options = [];
+    public int SelectedIndex;
+    public Action<int>? OnSelect;
+
+    public MyDropdown(string tag) : base(tag) { }
+
+    public override FlexNode Build(FrameState state)
+    {
+        var trigger = Flex.Row(gap: 6, pad: 10);
+        trigger.WidgetAction = new WidgetAction(this, Toggle);
+        trigger.Child(Flex.Text(Options[SelectedIndex], 14, Colors.TextPrimary));
+        // ... build dropdown UI ...
+        return trigger;
+    }
+
+    public override void HandleAction(int actionId)
+    {
+        switch (actionId)
+        {
+            case Toggle:
+                _isOpen = !_isOpen;
+                Invalidate();
+                break;
+        }
+    }
+}
+```
+
+**Embedding in a window:**
+
+```csharp
+readonly MyDropdown _theme = new("theme") { Options = ["Dark", "Light"] };
+
+public override SceneNode? BuildScene(FrameState state)
+{
+    // Dispatch typed widget actions from previous frame's buttons
+    WidgetActionRouter.ProcessClicks(state, _buttons);
+    _buttons.Clear();
+
+    return new FlexGroupNode
+    {
+        Root = Flex.Column(gap: 12,
+            Flex.Text("Settings", 18, Colors.TextPrimary),
+            Flex.Widget(_theme)
+        ),
+        Buttons = _buttons, X = 0, Y = 0, W = state.Width, H = state.Height
+    };
+}
+```
+
+**Key concepts:**
+
+- `Widget.Build(FrameState)` — called each frame, returns a FlexNode tree. The framework integrates it into Taffy layout and rendering automatically.
+- `FlexNode.WidgetAction = new WidgetAction(widget, actionId)` — typed action pairing a widget reference with an integer ID. No string encoding.
+- `WidgetActionRouter.ProcessClicks(state, buttons)` — call in BuildScene before `_buttons.Clear()` to dispatch widget actions from the previous frame. Returns non-widget action string if hit was a regular button.
+- `Widget.Invalidate()` — request a redraw from inside the widget. Propagated to `FrameState.NeedsRedraw` on the next `Build()` call.
+- `Widget.OnMount()` — lifecycle hook called by FlexRenderer on first render.
+
 ### Overlay System
 
 `WindowPluginBase` provides `ShowOverlay` and `CloseOverlay` for floating overlay windows:
@@ -381,9 +555,35 @@ Set `ExcludeFromWorkspace => true` on windows that shouldn't be persisted. This 
 
 ---
 
-## Bun Bridge from C#
+## IPC from C#
 
-`context.Bun` exposes `IBunService` — push to channels, query Bun services, or eval JS.
+### Unified Facade — `context.Ipc`
+
+`context.Ipc` is the preferred way to communicate from C# to other processes:
+
+```csharp
+// Push to browser (WebSocket broadcast)
+context.Ipc.Web.Push("data:updated", new { items = 42, status = "ready" });
+
+// Query a Bun service
+var result = await context.Ipc.Bun.Query("file-scanner", new { dir = "/tmp" });
+
+// Push to a specific worker
+context.Ipc.Worker("background").Push("jobs:enqueue", new { task = "sync" });
+```
+
+The facade has four sub-APIs:
+
+| Property | Target | Transport |
+|----------|--------|-----------|
+| `context.Ipc.Web` | Browser (all windows) | WebSocket broadcast |
+| `context.Ipc.Bun` | Main Bun process | stdin/stdout NDJSON |
+| `context.Ipc.Worker(name)` | Named Bun worker | relay via main Bun |
+| `context.Ipc.Host` | Self (C# host) | direct dispatch |
+
+### Low-level — `context.Bun`
+
+`context.Bun` exposes `IBunService` directly — same underlying transport, less structured:
 
 ```csharp
 context.Bun.Push("data:updated", new { items = 42, status = "ready" });
@@ -392,6 +592,119 @@ var result = await context.Bun.Query("file-scanner", new { dir = "/tmp" });
 using var doc = JsonDocument.Parse(result!);
 var count = doc.RootElement.GetProperty("count").GetInt32();
 ```
+
+---
+
+## Channels — Unified C# Communication
+
+`context.Channels` (or `ChannelManager.Instance`) is the primary API for C#-side data/event flow between plugins. It unifies typed pub/sub, render-wake notifications, and alerts under one managed interface with automatic hot-reload cleanup.
+
+### Typed Value Channels
+
+`ValueChannel<T>` retains the last value and replays it to new subscribers. Dispatch goes through the caller's `SynchronizationContext` (render thread safe via `Post()`) or `ThreadPool` if none.
+
+```csharp
+var price = context.Channels.Value<decimal>("price");
+
+// Publisher
+price.Set(42.50m);
+
+// Subscriber (on a render thread — callback dispatched via SyncContext.Post)
+var sub = price.Subscribe(val => UpdateDisplay(val));
+// ... later
+sub.Dispose();
+
+// Synchronous read (no dispatch, no callback)
+var current = price.Current;
+```
+
+### Typed Event Channels
+
+`EventChannel<T>` is fire-and-forget — no retention, no replay. Same dispatch rules.
+
+```csharp
+var signal = context.Channels.Event<SensorReading>("sensor:updated");
+
+// Publisher
+signal.Emit(new SensorReading("temp-01", 72.5, DateTime.UtcNow));
+
+// Subscriber
+var sub = signal.Subscribe(reading => LogReading(reading));
+```
+
+### Render-Wake
+
+Built on `DataChannel` internally. When a plugin's data source updates, notify the channel to wake render threads subscribed to it.
+
+```csharp
+// Signal that new data is available
+context.Channels.Notify("metrics");
+
+// Subscribe to wake events (returns IDisposable)
+var sub = context.Channels.Subscribe("metrics", () => RequestRedraw());
+
+// Multiple channels
+var sub = context.Channels.Subscribe(["metrics", "status"], () => RequestRedraw());
+```
+
+### Alerts
+
+Built on `Notifications` internally. Push in-app notifications with managed lifecycle.
+
+```csharp
+context.Channels.Alert.Error("Connection lost");
+context.Channels.Alert.Warn("High memory usage");
+context.Channels.Alert.Info("Build complete");
+
+// Subscribe to notifications
+var sub = context.Channels.Alert.OnNotification(n =>
+    Console.WriteLine($"[{n.Level}] {n.Message}"));
+
+// Read recent notifications
+var recent = context.Channels.Alert.Recent;
+
+// Dismiss / clear
+context.Channels.Alert.Dismiss(notification);
+context.Channels.Alert.Clear();
+```
+
+### Type Safety
+
+Accessing a channel with a mismatched type throws a clear error:
+
+```csharp
+context.Channels.Value<int>("x");       // creates ValueChannel<int>
+context.Channels.Value<decimal>("x");   // throws InvalidOperationException:
+// "Channel 'x' is ValueChannel<int>, cannot access as ValueChannel<decimal>"
+```
+
+### Hot-Reload Cleanup
+
+All subscriptions are tracked by source assembly. When a plugin DLL is hot-reloaded, `ChannelManager.Instance.UnsubscribeAll(assembly)` removes all subscriptions from the unloaded assembly — typed channels, render-wake, and alerts. This is called automatically by `DyLibLoader` alongside `ServiceLocator.UnregisterAll`.
+
+### Low-Level Primitives
+
+`DataChannel` and `Notifications` are the underlying primitives that `ChannelManager` builds on. They're marked `[EditorBrowsable(Advanced)]` — hidden from IntelliSense but still usable. Framework-internal code uses them directly; app/plugin code should prefer `ctx.Channels`.
+
+---
+
+## Thread Pools
+
+`context.ThreadPools` provides named thread pools for consolidating background work — 50 services can share 10 threads instead of each spinning up their own.
+
+```csharp
+// Configure pool size at startup
+context.ThreadPools.Configure("data-processing", maxThreads: 4);
+
+// Queue work by pool name (from any plugin or service)
+context.ThreadPools.QueueWork("data-processing", () => ProcessBatch(data));
+
+// Or get a handle for repeated use
+var pool = context.ThreadPools.Get("data-processing");
+pool.QueueWork(() => ProcessBatch(moreData));
+```
+
+Pools are created lazily on first reference. Default 2 threads if not explicitly configured. Uses `BlockingCollection<Action>` drain pattern with `IsBackground` threads.
 
 ---
 
@@ -488,13 +801,13 @@ while (true) {
 }
 ```
 
-### invoke() vs fetch()
+### ipc.host.call() vs fetch()
 
 Both models go through the same underlying `WKWebView` → C# bridge with no performance difference:
 
 | Approach | Best for |
 |----------|----------|
-| `invoke()` + `RegisterInvokeHandler` | Platform calls, one-off operations, named channels |
+| `ipc.host.call()` + `RegisterInvokeHandler` | Platform calls, one-off operations, named channels |
 | `context.Http` + `fetch()` | CRUD data, REST-shaped APIs, streaming responses |
 
 ---

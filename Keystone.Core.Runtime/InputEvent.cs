@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // InputEvent - Lock-free input event for main thread → render thread communication
 // Enqueued by WindowManager.RouteInputEvent, drained by WindowRenderThread.
 // This file needs to be updated to be more comprehensive 

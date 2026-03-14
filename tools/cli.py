@@ -185,6 +185,11 @@ def vendor_engine_bun(app_root: Path, engine: Path, bun_root: str = "bun"):
     shutil.copytree(engine_bun / "sdk", dst_sdk)
     print(f"  Vendored @keystone/sdk -> {dst_sdk.relative_to(app_root)}")
 
+    # @keystone/types.ts -> engine/bun/types.ts (SDK imports ../types relative to sdk/)
+    engine_types = engine_bun / "types.ts"
+    if engine_types.exists():
+        shutil.copy2(engine_types, nm / "@keystone" / "types.ts")
+
     # @keystone/lib -> engine/bun/lib/ (SDK imports ../lib/store relative to sdk/)
     engine_lib = engine_bun / "lib"
     if engine_lib.exists():

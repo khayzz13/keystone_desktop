@@ -1,9 +1,19 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // Notifications - Lightweight notification bus for surfacing errors, warnings, and info messages in-app
 // Error paths (DyLibLoader, ScriptManager, BunProcess, etc.) push here alongside Console.WriteLine.
 // UI components subscribe via OnNotification or read Recent.
 
 namespace Keystone.Core;
 
+/// <summary>
+/// Low-level notification primitive. ChannelManager.Alert builds on top of this internally.
+/// App/plugin code should use ctx.Channels.Alert for managed lifecycle and hot-reload safety.
+/// </summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Advanced)]
 public static class Notifications
 {
     private static readonly List<Notification> _recent = new();

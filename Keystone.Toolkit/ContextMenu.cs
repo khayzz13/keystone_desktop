@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // ContextMenu - Generic right-click context menu system
 // Provides: items, separators, sliders, color wheels, submenus
 // Self-contained state — does not depend on StateManager.

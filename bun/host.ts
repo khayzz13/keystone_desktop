@@ -1,9 +1,14 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // host.ts — Keystone Bun Runtime
 // Framework subprocess: services (backend logic), web components (frontend), actions, hot-reload.
 // Users build their UI entirely in web/ (any framework — vanilla, React, Vue, Svelte, etc.)
 // and their backend logic in services/ (data fetching, APIs, persistent state, background work).
 // C# handles native window chrome, GPU rendering, and system integration.
-// Communication: NDJSON over stdin/stdout + WebSocket bridge for web clients.
+// Communication: NDJSON stdin/stdout (control) + Unix socket (binary/streams) + WebSocket bridge (web clients).
 //
 // All behavior is driven by the app's keystone.config.ts (or defaults if absent).
 
@@ -12,7 +17,12 @@ process.title = process.env.KEYSTONE_APP_NAME ?? process.env.KEYSTONE_APP_ID ?? 
 import { readdirSync, existsSync, statSync, watch, realpathSync, readFileSync } from "fs";
 import { join } from "path";
 import type { ServerWebSocket } from "bun";
-import type { Request, ServiceContext, WorkerConnection, AppHostModule, HostContext } from "./types";
+import type { ServiceContext, WorkerConnection, AppHostModule, HostContext } from "./types";
+import { HandlerRegistry } from "./lib/handler-registry";
+import { createIpcFacade, type IpcFacade } from "./lib/ipc";
+import { StreamRegistry } from "./lib/stream";
+import { BinarySocket } from "./lib/binary-socket";
+import type { KeystoneEnvelope } from "./types";
 import { resolveConfig, type ResolvedConfig } from "./sdk/config";
 
 // Engine runtime root (host.ts, types.ts, lib/)
@@ -21,6 +31,9 @@ const ENGINE_ROOT = import.meta.dir;
 // Passed as first CLI arg by ApplicationRuntime, defaults to ENGINE_ROOT for dev.
 const APP_ROOT = process.argv[2] || ENGINE_ROOT;
 process.env.KEYSTONE_APP_ROOT = APP_ROOT;
+
+// Per-launch session token — all WS upgrades must present this in ?token= query param
+const WS_TOKEN = process.env.KEYSTONE_SESSION_TOKEN ?? '';
 
 // === Load app config ===
 
@@ -142,7 +155,7 @@ const originalFetch = globalThis.fetch;
 (globalThis as any).__KEYSTONE_ORIGINAL_FETCH__ = originalFetch;
 
 if (networkMode === "allowlist") {
-  globalThis.fetch = function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  globalThis.fetch = Object.assign(function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const hostPort = url.port && url.port !== "443" && url.port !== "80"
       ? `${url.hostname}:${url.port}` : url.hostname;
@@ -150,7 +163,7 @@ if (networkMode === "allowlist") {
       throw new Error(`[network-policy] ${url.hostname} is not in the allowed endpoints list`);
     }
     return originalFetch(input, init);
-  };
+  }, { preconnect: originalFetch.preconnect }) as typeof fetch;
 }
 
 console.error(
@@ -163,15 +176,39 @@ console.error(
 // === Registries ===
 
 const actionHandlers = new Map<string, (action: string) => void>();
-// Custom web message handlers — services register these via ctx.onWebMessage(type, fn)
-const webMessageHandlers = new Map<string, (data: any, ws: ServerWebSocket) => void | Promise<void>>();
-// Named invoke handlers — services register these via ctx.registerInvokeHandler(channel, fn)
+// Custom web message handlers — ownership-tracked, conflicts fail fast.
+// Services register these via ctx.onWebMessage(type, fn).
+const webMessageHandlers = new HandlerRegistry<(data: any, ws: ServerWebSocket) => void | Promise<void>>();
+// Host push handlers — services subscribe via ctx.onHostPush(channel, fn) to receive C# push messages
+const hostPushHandlers = new Map<string, Array<(data: any) => void>>();
+// Named invoke handlers — ownership-tracked, conflicts fail fast at registration.
 // Browser calls via invoke("channel", args) and gets a promise-based reply. Electron ipcMain.handle parity.
-const invokeHandlers = new Map<string, (args: any) => any | Promise<any>>();
+const invokeHandlers = new HandlerRegistry<(args: any, signal?: AbortSignal) => any | Promise<any>>();
+// HTTP handlers — ownership-tracked, conflicts fail fast.
+// Matched by longest-prefix-first in the main fetch handler before 404.
+const httpHandlers = new HandlerRegistry<(req: globalThis.Request, url: URL) => globalThis.Response | Promise<globalThis.Response | null> | null>();
+// In-flight invoke/query operations — keyed by request id, aborted on __cancel__ from browser
+const inflightOps = new Map<number, AbortController>();
+// Binary WebSocket handlers — ownership-tracked, conflicts fail fast.
+// Raw ArrayBuffer frames, no JSON. Connections via /ws-bin?channel=name. Used for stream lane, VS Code compat, etc.
+type BinaryHandler = {
+  onOpen?: (ws: ServerWebSocket) => void;
+  onMessage?: (ws: ServerWebSocket, data: Buffer) => void;
+  onClose?: (ws: ServerWebSocket) => void;
+};
+const binaryHandlers = new HandlerRegistry<BinaryHandler>();
+// Binary socket — dedicated Unix domain socket for stream/binary IPC with C# host.
+// Path injected via KEYSTONE_BINARY_SOCKET env var. stdin/stdout stays pure NDJSON.
+const binarySocket = new BinarySocket();
+const binarySocketPath = Bun.env.KEYSTONE_BINARY_SOCKET;
+
+// Stream registry — tracks open streams (host↔bun, browser↔bun) with lifecycle and backpressure.
+// Transport: envelopes sent over the binary socket (not stdout).
+const streams = new StreamRegistry((env) => binarySocket.send(env));
 
 type ServiceEntry = {
   mod: any;
-  query: (args?: any) => any;
+  query: (args?: any, signal?: AbortSignal) => any;
   stop?: () => void;
   health?: () => { ok: boolean; [k: string]: any };
 };
@@ -190,8 +227,8 @@ let serverRef: { publish: (topic: string, data: string) => void; port: number } 
   port: 0,
 };
 
-// Cache the last __theme__ push so new WS clients get it immediately on connect
-let lastTheme: string | null = null;
+// Server-side value retention — last value per channel, replayed to new WS clients on connect
+const valueCache = new Map<string, string>();
 
 // === Worker direct connections ===
 
@@ -201,7 +238,7 @@ function connectToWorker(name: string): WorkerConnection {
   const port = workerPorts[name];
   if (!port) throw new Error(`Worker "${name}" has no WebSocket (browserAccess=false or not yet discovered)`);
 
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${WS_TOKEN}`);
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   const subscribers = new Map<string, Set<(data: any) => void>>();
   let nextId = 1;
@@ -256,7 +293,40 @@ function connectToWorker(name: string): WorkerConnection {
   };
 }
 
-const ctx: ServiceContext = {
+// Cached worker connections for ipc.worker(name).call() round-trip
+const workerConnections = new Map<string, WorkerConnection>();
+function getWorkerConnection(name: string): WorkerConnection {
+  let conn = workerConnections.get(name);
+  if (!conn) {
+    conn = connectToWorker(name);
+    workerConnections.set(name, conn);
+  }
+  return conn;
+}
+
+// Tracks which service is currently being started — used as handler ownership key.
+let currentServiceOwner = "__host__";
+
+// Host query callbacks — Bun→C# request/reply (B6: bidirectional call primitive)
+let hostQueryNextId = 1;
+const hostQueryCallbacks = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+
+function hostQuery(service: string, args?: any): Promise<any> {
+  const id = hostQueryNextId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      hostQueryCallbacks.delete(id);
+      reject(new Error(`hostQuery("${service}") timed out after 30s`));
+    }, 30_000);
+    hostQueryCallbacks.set(id, {
+      resolve(v) { clearTimeout(timer); resolve(v); },
+      reject(e) { clearTimeout(timer); reject(e); },
+    });
+    console.log(JSON.stringify({ id, type: "query_host", service, args }));
+  });
+}
+
+const ipc: IpcFacade = createIpcFacade({
   call: async (service, args) => {
     const svc = services.get(service);
     if (!svc) throw new Error(`Unknown service: ${service}`);
@@ -264,23 +334,56 @@ const ctx: ServiceContext = {
   },
   push: (channel, data) => {
     const msg = JSON.stringify({ type: channel, data });
-    if (channel === "__theme__") lastTheme = msg;
     console.log(JSON.stringify({ type: "service_push", channel, data }));
     serverRef.publish(channel, msg);
   },
-  onWebMessage: (type, handler) => {
-    webMessageHandlers.set(type, handler);
-  },
-  registerInvokeHandler: (channel, handler) => {
-    invokeHandlers.set(channel, handler);
+  pushValue: (channel, data) => {
+    const msg = JSON.stringify({ type: channel, data });
+    valueCache.set(channel, msg);
+    console.log(JSON.stringify({ type: "service_push", channel, data }));
+    serverRef.publish(channel, msg);
   },
   relay: (target, channel, data) => {
     console.log(JSON.stringify({ type: "relay", target, channel, data }));
   },
+  hostQuery,
+  hostAction: (action) => {
+    console.log(JSON.stringify({ type: "action_from_web", action }));
+  },
+  workerQuery: (name, service, args) => getWorkerConnection(name).query(service, args),
+});
+
+const ctx: ServiceContext = {
+  call: ipc.call,
+  push: ipc.web.push,
+  pushValue: ipc.web.pushValue,
+  onWebMessage: (type, handler) => {
+    webMessageHandlers.register(type, handler, currentServiceOwner);
+  },
+  onHostPush: (channel, handler) => {
+    const arr = hostPushHandlers.get(channel);
+    if (arr) arr.push(handler);
+    else hostPushHandlers.set(channel, [handler]);
+  },
+  registerInvokeHandler: (channel, handler) => {
+    invokeHandlers.register(channel, handler, currentServiceOwner);
+  },
+  relay: (target, channel, data) => {
+    console.log(JSON.stringify({ type: "relay", target, channel, data }));
+  },
+  registerBinaryWebSocket: (channel, handler) => {
+    binaryHandlers.register(channel, handler, currentServiceOwner);
+  },
+  registerHttpHandler: (prefix, handler) => {
+    httpHandlers.register(prefix, handler, currentServiceOwner);
+  },
+  openStream: (channel, target) => streams.open(channel, target),
+  onStream: (channel, handler) => streams.onStream(channel, handler),
   workers: {
     connect: connectToWorker,
     ports: () => workerPorts,
   },
+  ipc,
 };
 
 // === Built-in engine services ===
@@ -324,10 +427,12 @@ async function discoverServices(bustCache = false) {
   // The packager generates a wrapper that sets this global before importing host.ts.
   const compiled = (globalThis as any).__KEYSTONE_COMPILED_SERVICES__;
   if (compiled) {
-    for (const [name, mod] of Object.entries(compiled) as [string, any][]) {
+    for (const [name, raw] of Object.entries(compiled) as [string, any][]) {
+      const mod = raw.default ?? raw;
       mergeServiceNetwork(name, mod);
       if (mod.start) {
-        await mod.start(ctx);
+        currentServiceOwner = name;
+        try { await mod.start(ctx); } finally { currentServiceOwner = "__host__"; }
         services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
       }
       if (mod.onAction) actionHandlers.set(name, mod.onAction);
@@ -355,7 +460,8 @@ async function discoverServices(bustCache = false) {
     } else continue;
     mergeServiceNetwork(name, mod);
     if (mod.start) {
-      await mod.start(ctx);
+      currentServiceOwner = name;
+      try { await mod.start(ctx); } finally { currentServiceOwner = "__host__"; }
       services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
     }
     if (mod.onAction) actionHandlers.set(name, mod.onAction);
@@ -384,6 +490,12 @@ async function reloadService(name: string) {
     }
   }
 
+  // Clear ownership-tracked handlers before re-registering
+  invokeHandlers.removeByOwner(name);
+  httpHandlers.removeByOwner(name);
+  webMessageHandlers.removeByOwner(name);
+  binaryHandlers.removeByOwner(name);
+
   const dirPath = join(serviceDir, name);
   const filePath = join(serviceDir, name + ".ts");
 
@@ -403,7 +515,8 @@ async function reloadService(name: string) {
     const imported = await import(entryPath + `?t=${Date.now()}`);
     const mod = imported.default ?? imported;
     if (mod.start) {
-      await mod.start(ctx);
+      currentServiceOwner = name;
+      try { await mod.start(ctx); } finally { currentServiceOwner = "__host__"; }
       services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
       console.error(`[host] reloaded service: ${name}`);
     }
@@ -423,6 +536,10 @@ async function reloadAll() {
   }
 
   actionHandlers.clear();
+  invokeHandlers.clear();
+  httpHandlers.clear();
+  webMessageHandlers.clear();
+  binaryHandlers.clear();
   services.clear();
 
   await discoverServices(true);
@@ -487,20 +604,27 @@ if (watchEnabled) {
         return;
       }
       // Check if file is a dep inside a known component's directory → rebuild via entry
+      // Pick the deepest (longest entryDir) match so subdirectory components
+      // aren't shadowed by a shallower entry in a parent directory
+      let bestEntry: string | undefined, bestName: string | undefined, bestLen = 0;
       for (const [entryAbs, name] of explicitEntryMap) {
         const entryDir = entryAbs.slice(0, entryAbs.lastIndexOf('/') + 1);
-        if (abs.startsWith(entryDir)) {
-          Bun.build(buildOpts([entryAbs], name)).then((result: any) => {
-            if (!result.success) {
-              for (const log of result.logs) console.error(`[host] ${name}: ${log.message}`);
-              return;
-            }
-            bundledComponents.add(name);
-            console.error(`[host] rebundled component "${name}" (dep changed: ${rel})`);
-            serverRef.publish("all", JSON.stringify({ type: "__hmr__", component: name }));
-          }).catch((e: any) => console.error(`[host] failed to rebundle "${name}": ${e.message}`));
-          return;
+        if (abs.startsWith(entryDir) && entryDir.length > bestLen) {
+          bestEntry = entryAbs; bestName = name; bestLen = entryDir.length;
         }
+      }
+      if (bestEntry && bestName) {
+        const _entry = bestEntry, _name = bestName;
+        Bun.build(buildOpts([_entry], _name)).then((result: any) => {
+          if (!result.success) {
+            for (const log of result.logs) console.error(`[host] ${_name}: ${log.message}`);
+            return;
+          }
+          bundledComponents.add(_name);
+          console.error(`[host] rebundled component "${_name}" (dep changed: ${rel})`);
+          serverRef.publish("all", JSON.stringify({ type: "__hmr__", component: _name }));
+        }).catch((e: any) => console.error(`[host] failed to rebundle "${_name}": ${e.message}`));
+        return;
       }
       // Fall back to auto-discovered web.dir files
       if (rel.startsWith(config.web.dir + "/")) {
@@ -638,14 +762,28 @@ if (config.web.autoBundle) await bundleWebComponents();
 // === HTTP server (conditional) ===
 
 if (config.http.enabled) {
-  const server = Bun.serve({
+  const server = Bun.serve<{ binary?: boolean; channel?: string }>({
     hostname: config.http.hostname,
     port: 0,
     async fetch(req, server) {
       const url = new URL(req.url);
 
       if (url.pathname === "/ws") {
-        return server.upgrade(req) ? undefined : new Response("", { status: 400 });
+        if (url.searchParams.get("token") !== WS_TOKEN)
+          return new Response("", { status: 401 });
+        return server.upgrade(req, { data: {} }) ? undefined : new Response("", { status: 400 });
+      }
+
+      // Binary WebSocket — raw ArrayBuffer frames, no JSON wrapping.
+      // Used by stream lane, Electron compatibility layer, and any app needing binary IPC.
+      if (url.pathname === "/ws-bin") {
+        if (url.searchParams.get("token") !== WS_TOKEN)
+          return new Response("", { status: 401 });
+        const channel = url.searchParams.get("channel") || "default";
+        if (!binaryHandlers.has(channel))
+          return new Response(`Unknown binary channel: ${channel}`, { status: 404 });
+        return server.upgrade(req, { data: { binary: true, channel } })
+          ? undefined : new Response("", { status: 400 });
       }
 
       if (url.pathname === "/__host__") {
@@ -668,21 +806,49 @@ if (config.http.enabled) {
         });
       }
 
+      // Service-registered HTTP handlers — longest prefix match first
+      if (httpHandlers.size > 0) {
+        const prefixes = [...httpHandlers.keys()].sort((a, b) => b.length - a.length);
+        for (const prefix of prefixes) {
+          if (url.pathname === prefix || url.pathname.startsWith(prefix + '/') || url.pathname.startsWith(prefix)) {
+            const result = await httpHandlers.get(prefix)!(req, url);
+            if (result) return result;
+          }
+        }
+      }
+
       return new Response("Not found", { status: 404 });
     },
 
     websocket: {
       open(ws: ServerWebSocket) {
+        if ((ws.data as any)?.binary) {
+          const channel = (ws.data as any).channel as string;
+          binaryHandlers.get(channel)?.onOpen?.(ws);
+          return;
+        }
         ws.subscribe("all");
-        if (lastTheme) ws.send(lastTheme);
+        for (const cached of valueCache.values()) ws.send(cached);
       },
       message(ws: ServerWebSocket, msg: string | Buffer) {
+        if ((ws.data as any)?.binary) {
+          const channel = (ws.data as any).channel as string;
+          binaryHandlers.get(channel)?.onMessage?.(ws, msg as Buffer);
+          return;
+        }
         try {
           const { type, data } = JSON.parse(msg as string);
           handleWebMessage(ws, type, data);
         } catch {}
       },
-      close(ws: ServerWebSocket) { ws.unsubscribe("all"); },
+      close(ws: ServerWebSocket) {
+        if ((ws.data as any)?.binary) {
+          const channel = (ws.data as any).channel as string;
+          binaryHandlers.get(channel)?.onClose?.(ws);
+          return;
+        }
+        ws.unsubscribe("all");
+      },
     },
   });
 
@@ -824,29 +990,50 @@ async function handleWebMessage(ws: ServerWebSocket, type: string, data: any) {
     return;
   }
   if (type === "query" && data?.service) {
+    const id = data.id;
+    const ac = new AbortController();
+    inflightOps.set(id, ac);
     try {
       const svc = services.get(data.service);
       if (!svc) throw new Error(`Unknown service: ${data.service}`);
-      const result = await svc.query?.(data.args ?? {});
-      ws.send(JSON.stringify({ type: "__query_result__", id: data.id, result }));
+      const result = await svc.query?.(data.args ?? {}, ac.signal);
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__query_result__", id, result }));
     } catch (e: any) {
-      ws.send(JSON.stringify({ type: "__query_result__", id: data.id, error: e.message }));
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__query_result__", id, error: { code: e.name === 'AbortError' ? "cancelled" : "handler_error", message: e.message } }));
+    } finally {
+      inflightOps.delete(id);
     }
     return;
   }
   // Named invoke handler — registered by services via ctx.registerInvokeHandler(channel, fn)
-  // Browser: invoke("channel", args) → promise reply. Electron ipcMain.handle() parity.
+  // Browser: invokeBun("channel", args) → promise reply. Electron ipcMain.handle() parity.
   if (type === "invoke" && data?.channel) {
     const handler = invokeHandlers.get(data.channel);
-    const replyChannel = data.replyChannel;
-    if (!replyChannel) return;
-    try {
-      if (!handler) throw new Error(`No invoke handler registered for: ${data.channel}`);
-      const result = await handler(data.args ?? {});
-      ws.send(JSON.stringify({ type: replyChannel, data: { result } }));
-    } catch (e: any) {
-      ws.send(JSON.stringify({ type: replyChannel, data: { error: e.message } }));
+    const id = data.id;
+    if (!handler) {
+      ws.send(JSON.stringify({ type: "__invoke_reply__", id, error: { code: "handler_not_found", message: `No invoke handler: ${data.channel}` } }));
+      return;
     }
+    const ac = new AbortController();
+    inflightOps.set(id, ac);
+    try {
+      const result = await handler(data.args ?? {}, ac.signal);
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__invoke_reply__", id, result }));
+    } catch (e: any) {
+      if (!ac.signal.aborted)
+        ws.send(JSON.stringify({ type: "__invoke_reply__", id, error: { code: e.name === 'AbortError' ? "cancelled" : "handler_error", message: e.message } }));
+    } finally {
+      inflightOps.delete(id);
+    }
+    return;
+  }
+  // Cancellation from browser — abort in-flight handler if still running
+  if (type === "__cancel__" && data?.id) {
+    const ac = inflightOps.get(data.id);
+    if (ac) { ac.abort(); inflightOps.delete(data.id); }
     return;
   }
   // Custom message handler — registered by services via ctx.onWebMessage(type, fn)
@@ -877,22 +1064,23 @@ async function loadAppHost(): Promise<AppHostModule | null> {
 function makeHostContext(): HostContext {
   return {
     async registerService(name, mod) {
-      if (mod.start) await mod.start(ctx);
+      if (mod.start) {
+        currentServiceOwner = name;
+        try { await mod.start(ctx); } finally { currentServiceOwner = "__host__"; }
+      }
       services.set(name, { mod, query: mod.query, stop: mod.stop, health: mod.health });
     },
     registerInvokeHandler(channel, handler) {
-      invokeHandlers.set(channel, handler);
+      invokeHandlers.register(channel, handler, "__host__");
     },
     onWebMessage(type, handler) {
-      webMessageHandlers.set(type, handler);
+      webMessageHandlers.register(type, handler, "__host__");
     },
-    push(channel, data) {
-      const msg = JSON.stringify({ type: channel, data });
-      serverRef.publish(channel, msg);
-      console.log(JSON.stringify({ type: "service_push", channel, data }));
-    },
+    push: ipc.web.push,
+    pushValue: ipc.web.pushValue,
     get services() { return services as ReadonlyMap<string, any>; },
     get config() { return config; },
+    get ipc() { return ipc; },
   };
 }
 
@@ -916,6 +1104,23 @@ function emitReady() {
   }));
 }
 
+// Connect binary socket for stream/binary IPC (before ready signal so C# can send immediately)
+if (binarySocketPath) {
+  try {
+    await binarySocket.connect(binarySocketPath);
+    binarySocket.onEnvelope = (env: KeystoneEnvelope) => {
+      switch (env.kind) {
+        case "stream_open": streams.handleOpen(env); break;
+        case "stream_chunk": streams.handleChunk(env); break;
+        case "stream_close":
+        case "cancel": streams.handleClose(env); break;
+      }
+    };
+  } catch (e: any) {
+    console.error(`[host] Binary socket connect failed: ${e.message}`);
+  }
+}
+
 emitReady();
 
 if (appHost?.onReady) {
@@ -932,7 +1137,12 @@ if (config.health.enabled) {
         if (!status.ok) {
           console.error(`[host] service ${name} unhealthy, restarting`);
           try { svc.stop?.(); } catch {}
-          await svc.mod.start(ctx);
+          invokeHandlers.removeByOwner(name);
+          httpHandlers.removeByOwner(name);
+          webMessageHandlers.removeByOwner(name);
+          binaryHandlers.removeByOwner(name);
+          currentServiceOwner = name;
+          try { await svc.mod.start(ctx); } finally { currentServiceOwner = "__host__"; }
           services.set(name, { mod: svc.mod, query: svc.mod.query, stop: svc.mod.stop, health: svc.mod.health });
           console.error(`[host] service ${name} restarted`);
         }
@@ -957,7 +1167,16 @@ if (config.health.enabled) {
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const req = JSON.parse(line) as Request;
+        const req = JSON.parse(line);
+
+        // Host query response — C# replying to a Bun→C# query_host request
+        if (req.id && !req.type && hostQueryCallbacks.has(req.id)) {
+          const cb = hostQueryCallbacks.get(req.id)!;
+          hostQueryCallbacks.delete(req.id);
+          if (req.error) cb.reject(new Error(typeof req.error === "string" ? req.error : req.error.message));
+          else cb.resolve(req.result);
+          continue;
+        }
 
         if (req.type === "shutdown") {
           if (appHost?.onShutdown) await appHost.onShutdown(makeHostContext());
@@ -980,7 +1199,7 @@ if (config.health.enabled) {
         if (req.type === "query") {
           const svc = services.get(req.service);
           if (!svc) {
-            console.log(JSON.stringify({ id: req.id, error: `Unknown service: ${req.service}` }));
+            console.log(JSON.stringify({ id: req.id, error: { code: "service_not_found", message: `Unknown service: ${req.service}` } }));
             continue;
           }
           const result = await svc.query?.(req.args ?? {});
@@ -1002,11 +1221,19 @@ if (config.health.enabled) {
 
         else if (req.type === "push") {
           serverRef.publish(req.channel, JSON.stringify({ type: req.channel, data: req.data }));
+          const handlers = hostPushHandlers.get(req.channel);
+          if (handlers) for (const fn of handlers) fn(req.data);
+        }
+
+        else if (req.type === "push_value") {
+          const msg = JSON.stringify({ type: req.channel, data: req.data });
+          valueCache.set(req.channel, msg);
+          serverRef.publish(req.channel, msg);
         }
 
         else if (req.type === "eval") {
           if (!effectiveAllowEval) {
-            console.log(JSON.stringify({ id: req.id, error: "eval disabled by security policy" }));
+            console.log(JSON.stringify({ id: req.id, error: { code: "capability_denied", message: "eval disabled by security policy" } }));
           } else {
             const result = await eval(req.code);
             console.log(JSON.stringify({ id: req.id, result }));
@@ -1014,7 +1241,7 @@ if (config.health.enabled) {
         }
 
       } catch (e: any) {
-        console.log(JSON.stringify({ id: 0, error: e.message }));
+        console.log(JSON.stringify({ id: 0, error: { code: "handler_error", message: e.message } }));
       }
     }
   }

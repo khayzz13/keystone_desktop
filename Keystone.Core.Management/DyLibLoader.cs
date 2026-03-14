@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // DyLibLoader - Hot-reload plugin DLLs with per-plugin collectible AssemblyLoadContexts
 
 using System;
@@ -358,6 +363,7 @@ public class DyLibLoader
         // Clean up services from this assembly via ServiceLocator
         if (info.Assembly != null)
             Keystone.Core.ServiceLocator.UnregisterAll(info.Assembly);
+            Keystone.Core.ChannelManager.Instance.UnsubscribeAll(info.Assembly);
         _loaded.Remove(name);
 
         if (_hotReloadEnabled && info.Context != null)
@@ -567,7 +573,7 @@ public class DyLibLoader
             foreach (var arg in args)
                 psi.ArgumentList.Add(arg);
 
-            using var process = Process.Start(psi);
+            using var process = System.Diagnostics.Process.Start(psi);
             if (process == null)
             {
                 output = "failed to start process";

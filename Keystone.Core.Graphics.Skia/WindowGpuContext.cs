@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // WindowGpuContext - Per-window GPU state (GRContext + command queue + present)
 // Each window gets its own Metal command queue and SkiaSharp GRContext.
 // GRContext is NOT thread-safe — must stay on its owning render thread.
@@ -12,6 +17,10 @@ namespace Keystone.Core.Graphics.Skia;
 
 public class WindowGpuContext : IWindowGpuContext
 {
+    const long MinCacheBytes = 16 * 1024 * 1024;  // 16MB floor
+    const long MaxCacheBytes = 64 * 1024 * 1024;  // 64MB ceiling
+    const int GrowthCheckInterval = 120;            // check every ~2 seconds at 60fps
+
     readonly IMTLDevice _device;
     readonly IMTLCommandQueue _queue;
     readonly GRContext _grContext;
@@ -19,6 +28,9 @@ public class WindowGpuContext : IWindowGpuContext
     GRBackendRenderTarget? _backendRT;
     ICAMetalDrawable? _drawable;
     IMTLTexture? _drawableTexture; // must dispose explicitly — retains IOSurface
+    long _currentCacheLimit = MinCacheBytes;
+    int _framesSinceCheck;
+    int _framesUnderThreshold;
     bool _disposed;
 
     public IMTLDevice Device => _device;
@@ -39,7 +51,7 @@ public class WindowGpuContext : IWindowGpuContext
         var backendContext = new GRMtlBackendContext { Device = device, Queue = queue };
         var grContext = GRContext.CreateMetal(backendContext)
             ?? throw new InvalidOperationException("Failed to create per-window GRContext");
-        grContext.SetResourceCacheLimit(64 * 1024 * 1024); // 64MB cap per window
+        grContext.SetResourceCacheLimit((int)MinCacheBytes); // start at 16MB, grows adaptively up to 64MB
         return new WindowGpuContext(device, queue, grContext);
     }
 
@@ -81,6 +93,8 @@ public class WindowGpuContext : IWindowGpuContext
 
         c.Flush();
         _grContext.Flush();
+        _grContext.Submit(synchronous: true);  // wait for shader compilation
+        _grContext.PurgeUnlockedResources(true); // evict warmup textures, keep compiled shaders
     }
 
     /// <summary>
@@ -123,7 +137,7 @@ public class WindowGpuContext : IWindowGpuContext
 
         _surface.Canvas.Flush();
         _grContext.Flush();
-        _grContext.Submit(synchronous: true);
+        _grContext.Submit(synchronous: false); // don't block — present cmdBuffer sync is sufficient
 
         using var cmdBuffer = _queue.CommandBuffer();
         if (cmdBuffer != null)
@@ -135,6 +149,34 @@ public class WindowGpuContext : IWindowGpuContext
 
         DisposeFrameResources();
         _grContext.PurgeUnlockedResources(false);
+
+        // Adaptive cache: grow on pressure, shrink on sustained low usage
+        if (++_framesSinceCheck >= GrowthCheckInterval)
+        {
+            _framesSinceCheck = 0;
+            _grContext.GetResourceCacheUsage(out _, out var usedBytes);
+
+            if (usedBytes > _currentCacheLimit * 80 / 100 && _currentCacheLimit < MaxCacheBytes)
+            {
+                _currentCacheLimit = Math.Min(_currentCacheLimit * 2, MaxCacheBytes);
+                _grContext.SetResourceCacheLimit((int)_currentCacheLimit);
+                _framesUnderThreshold = 0;
+            }
+            else if (usedBytes < _currentCacheLimit * 25 / 100 && _currentCacheLimit > MinCacheBytes)
+            {
+                if (++_framesUnderThreshold >= 10) // ~20 seconds sustained low usage
+                {
+                    _currentCacheLimit = Math.Max(_currentCacheLimit / 2, MinCacheBytes);
+                    _grContext.SetResourceCacheLimit((int)_currentCacheLimit);
+                    _grContext.PurgeUnlockedResources(false);
+                    _framesUnderThreshold = 0;
+                }
+            }
+            else
+            {
+                _framesUnderThreshold = 0;
+            }
+        }
     }
 
     /// <summary>
@@ -165,7 +207,9 @@ public class WindowGpuContext : IWindowGpuContext
         _grContext.Submit(synchronous: true);
         _grContext.SetResourceCacheLimit(0);
         _grContext.PurgeUnlockedResources(true);
-        _grContext.SetResourceCacheLimit(64 * 1024 * 1024);
+        _currentCacheLimit = MinCacheBytes;
+        _framesUnderThreshold = 0;
+        _grContext.SetResourceCacheLimit((int)_currentCacheLimit);
     }
 
     // === IWindowGpuContext (object-typed BeginFrame for platform-agnostic render thread) ===

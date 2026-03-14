@@ -1,10 +1,20 @@
-// DataChannel — string-keyed pub/sub for data-driven redraws
-// Services call DataChannel.Notify("trades") when new data arrives.
-// ManagedWindow subscribes RequestRedraw for the plugin's Dependencies channels.
-// Apps define their own channel names — the framework has no domain knowledge.
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+// DataChannel — legacy render-wake primitive, now internal to ChannelManager.
+// External callers should use ctx.Channels.Notify() and ctx.Channels.Subscribe() instead.
 
 namespace Keystone.Core;
 
+/// <summary>
+/// Legacy render-wake primitive. Use <see cref="IChannelManager.Notify"/> and
+/// <see cref="IChannelManager.Subscribe(string, Action)"/> instead.
+/// Kept for ChannelManager internal delegation; will be inlined in a future pass.
+/// </summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+[Obsolete("Use ChannelManager.Instance.Notify/Subscribe or ctx.Channels instead.")]
 public static class DataChannel
 {
     private static readonly Dictionary<string, List<Action>> _listeners = new();

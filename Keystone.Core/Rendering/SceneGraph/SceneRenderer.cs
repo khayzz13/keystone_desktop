@@ -1,7 +1,13 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // SceneRenderer - Cache-aware renderer for retained scene graph
 // Clean GroupNodes replay from cached SKPicture. Dirty subtrees re-render + re-cache.
 // FlexGroupNode renders via FlexRenderer, caches as SKPicture.
 
+using Keystone.Core.UI;
 using SkiaSharp;
 
 namespace Keystone.Core.Rendering;
@@ -9,30 +15,15 @@ namespace Keystone.Core.Rendering;
 public class SceneRenderer : IDisposable
 {
     SceneNode? _previous;
-    float _lastMouseX = float.NaN;
-    float _lastMouseY = float.NaN;
-    bool _lastMouseDown;
-    bool _forceDynamicFlexFrame;
 
     /// <summary>
     /// Diff against previous frame, then render. Caches clean subtrees.
     /// </summary>
     public void Render(SKCanvas canvas, SkiaPaintCache paints, FrameState state, SceneNode root)
     {
-        _forceDynamicFlexFrame =
-            _lastMouseX != state.MouseX
-            || _lastMouseY != state.MouseY
-            || _lastMouseDown != state.MouseDown
-            || state.MouseScroll != 0
-            || state.MouseClicked
-            || state.RightClick;
-
         SceneDiff.Diff(_previous, root);
         RenderNode(canvas, paints, state, root);
         _previous = root;
-        _lastMouseX = state.MouseX;
-        _lastMouseY = state.MouseY;
-        _lastMouseDown = state.MouseDown;
     }
 
     void RenderNode(SKCanvas canvas, SkiaPaintCache paints, FrameState state, SceneNode node)
@@ -99,7 +90,10 @@ public class SceneRenderer : IDisposable
 
             case PointsNode pts:
                 if (pts.Count > 0)
-                    canvas.DrawPoints(SKPointMode.Lines, pts.Points.AsSpan(0, pts.Count).ToArray(), paints.GetStroke(pts.Color, pts.Width));
+                {
+                    var arr = pts.Count == pts.Points.Length ? pts.Points : pts.Points[..pts.Count];
+                    canvas.DrawPoints(SKPointMode.Lines, arr, paints.GetStroke(pts.Color, pts.Width));
+                }
                 break;
 
             case PathNode p:
@@ -167,8 +161,11 @@ public class SceneRenderer : IDisposable
     {
         if (flex.Root == null) return;
 
-        // Clean → replay cached SKPicture + lightweight button registration (no GPU rendering)
-        if (!flex.Dirty && flex.Cache != null && !_forceDynamicFlexFrame)
+        // Per-node interaction scan — check if any hover/press state actually changed
+        bool interactionDirty = ScanInteractionChanges(flex.Root, state, flex.X, flex.Y);
+
+        // Clean + no interaction change → replay cached SKPicture
+        if (!flex.Dirty && flex.Cache != null && !interactionDirty)
         {
             canvas.DrawPicture(flex.Cache);
             if (flex.Buttons != null)
@@ -176,7 +173,7 @@ public class SceneRenderer : IDisposable
             return;
         }
 
-        // Dirty → render via FlexRenderer, cache as SKPicture
+        // Dirty or interaction changed → full render + cache
         var recorder = new SKPictureRecorder();
         var bounds = new SKRect(flex.X, flex.Y, flex.X + flex.W, flex.Y + flex.H);
         var recCanvas = recorder.BeginRecording(bounds);
@@ -189,6 +186,68 @@ public class SceneRenderer : IDisposable
         flex.Cache = recorder.EndRecording();
         recorder.Dispose();
         canvas.DrawPicture(flex.Cache);
+    }
+
+    /// <summary>
+    /// Lightweight scan of interactive FlexNodes to detect hover/press state changes.
+    /// Only visits nodes with HoverBgColor/PressedBgColor. No Taffy, no GPU work —
+    /// just cached _lx/_ly/_lw/_lh arithmetic.
+    /// </summary>
+    bool ScanInteractionChanges(FlexNode root, FrameState state, float rootX, float rootY)
+    {
+        if (!root._layoutValid) return false;
+        // Scroll input always triggers re-render (infrequent, resets after one frame)
+        if (state.MouseScroll != 0) return true;
+        // Click/right-click always triggers (needs button state update)
+        if (state.MouseClicked || state.RightClick) return true;
+        return ScanNode(root, state, rootX, rootY);
+    }
+
+    static bool ScanNode(FlexNode node, FrameState state, float parentX, float parentY)
+    {
+        float x = parentX + node._lx;
+        float y = parentY + node._ly;
+        float w = node._lw;
+        float h = node._lh;
+
+        bool changed = false;
+
+        // Only check nodes with visual hover/press states
+        bool interactive = node.Action != null
+            && (node.HoverBgColor.HasValue || node.PressedBgColor.HasValue);
+
+        if (interactive)
+        {
+            bool hovered = state.MouseX >= x && state.MouseX < x + w
+                        && state.MouseY >= y && state.MouseY < y + h;
+            bool pressed = hovered && state.MouseDown;
+
+            if (hovered != node._wasHovered || pressed != node._wasPressed)
+            {
+                node._wasHovered = hovered;
+                node._wasPressed = pressed;
+                changed = true;
+            }
+        }
+
+        // Widget subtree
+        if (node.Widget?._lastBuild != null)
+        {
+            if (ScanNode(node.Widget._lastBuild, state, x, y))
+                changed = true;
+        }
+
+        // Children
+        if (node.Children != null)
+        {
+            for (int i = 0; i < node.Children.Count; i++)
+            {
+                if (ScanNode(node.Children[i], state, x, y))
+                    changed = true;
+            }
+        }
+
+        return changed;
     }
 
     public void Dispose()

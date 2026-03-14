@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // D3DGpuContext — Per-window D3D12 GPU state implementing IWindowGpuContext.
 // Each window gets its own IDXGISwapChain3 + GRContext.
 // Equivalent of WindowGpuContext.cs (Metal) and VulkanGpuContext.cs (Vulkan).

@@ -1,11 +1,14 @@
-// BunWorker — Per-worker lifecycle manager for additional Bun subprocesses.
-// Mirrors BunManager patterns (pre-ready queue, callback routing, crash recovery)
-// but stripped of web component concerns. Each worker runs worker-host.ts with
-// its own services directory and optional WebSocket server.
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
 
-using System.Collections.Concurrent;
+// BunWorker — Per-worker lifecycle manager for additional Bun subprocesses.
+// Uses ManagedProcessBridge for protocol layer (pre-ready queue, callback routing).
+// Restart logic delegated to ManagedProcess.Restart property.
+
 using System.Text.Json;
-using Keystone.Core;
+using Keystone.Core.Management.Process;
 
 namespace Keystone.Core.Management.Bun;
 
@@ -13,26 +16,19 @@ public class BunWorker : IDisposable
 {
     public string Name { get; }
     public BunWorkerConfig Config { get; }
-    public bool IsRunning => _ready && (_process?.IsRunning ?? false);
+    public bool IsRunning => _bridge is { IsReady: true } && _process is { IsRunning: true };
     public int? Port => _port > 0 ? _port : null;
     public IReadOnlyList<string> Services => _services;
 
     private BunProcess? _process;
-    private volatile bool _ready;
-    private int _nextId;
+    private ManagedProcessBridge? _bridge;
     private int _port;
     private List<string> _services = new();
 
-    private readonly ConcurrentQueue<string> _pendingQueue = new();
-    private readonly ConcurrentDictionary<int, Action<string>> _callbacks = new();
-
-    // Crash recovery
-    private int _restartCount;
-    private bool _restartScheduled;
+    // Launch params for restart
     private string? _workerHostPath;
     private string? _appRoot;
     private string? _compiledExe;
-    private volatile bool _shutdownRequested;
 
     // Events
     public Action<string, string>? OnServicePush;
@@ -50,9 +46,10 @@ public class BunWorker : IDisposable
         _workerHostPath = workerHostPath;
         _appRoot = appRoot;
         _compiledExe = compiledExe;
-        _shutdownRequested = false;
 
         var process = new BunProcess();
+        process.Restart = new RestartPolicy(Config.MaxRestarts, Config.BaseBackoffMs);
+
         var env = new Dictionary<string, string>
         {
             ["KEYSTONE_WORKER_NAME"] = Config.Name,
@@ -60,6 +57,8 @@ public class BunWorker : IDisposable
             ["KEYSTONE_BROWSER_ACCESS"] = Config.BrowserAccess.ToString().ToLower(),
             ["KEYSTONE_APP_ROOT"] = appRoot,
         };
+        if (BunManager.Instance.SessionToken is { } token)
+            env["KEYSTONE_SESSION_TOKEN"] = token;
 
         if (Config.IsExtensionHost)
         {
@@ -68,20 +67,25 @@ public class BunWorker : IDisposable
                 env["KEYSTONE_ALLOWED_CHANNELS"] = string.Join(",", Config.AllowedChannels);
         }
 
-        // Wire ready signal detection
+        // Create bridge — wires OnLine to protocol dispatch
+        var bridge = new ManagedProcessBridge(process);
+        bridge.OnServicePush = (ch, d) => OnServicePush?.Invoke(ch, d);
+        bridge.OnRelay = (target, channel, data) => BunWorkerManager.Instance.Route(Name, target, channel, data);
+        // Worker host queries route through the same BunManager registry
+        bridge.OnHostQuery = BunManager.Instance.DispatchHostQuery;
+
+        // Before bridge is ready, intercept ready signal
         process.OnLine = line =>
         {
-            if (!_ready && TryAttachFromReadySignal(process, line))
+            if (TryAttachFromReadySignal(bridge, process, line))
                 return;
         };
 
         process.OnExit = exitCode =>
         {
-            if (_shutdownRequested) return;
             Console.WriteLine($"[BunWorker:{Name}] Process exited (code={exitCode})");
             Detach();
             OnCrash?.Invoke(exitCode);
-            ScheduleRestart();
         };
 
         if (!process.Start(workerHostPath, appRoot, compiledExe, env: env))
@@ -91,11 +95,12 @@ public class BunWorker : IDisposable
         }
 
         _process = process;
+        _bridge = bridge;
         Console.WriteLine($"[BunWorker:{Name}] Started");
         return true;
     }
 
-    private bool TryAttachFromReadySignal(BunProcess process, string jsonLine)
+    private bool TryAttachFromReadySignal(ManagedProcessBridge bridge, BunProcess process, string jsonLine)
     {
         try
         {
@@ -109,13 +114,9 @@ public class BunWorker : IDisposable
                 : new List<string>();
             _port = root.TryGetProperty("port", out var p) ? p.GetInt32() : 0;
 
-            // Switch to dispatch mode
-            process.OnLine = OnStdoutLine;
-            _ready = true;
-
-            // Flush queued messages
-            while (_pendingQueue.TryDequeue(out var queued))
-                process.Send(queued);
+            bridge.MarkReady();
+            process.ResetRestartCount();
+            OnRestart?.Invoke(0);
 
             Console.WriteLine($"[BunWorker:{Name}] Ready: {_services.Count} services, port={_port}");
             return true;
@@ -125,145 +126,34 @@ public class BunWorker : IDisposable
 
     private void Detach()
     {
-        _ready = false;
+        _bridge?.Detach();
+        _bridge = null;
         _process = null;
         _services = new();
         _port = 0;
-        foreach (var cb in _callbacks.Values)
-            try { cb("{}"); } catch { }
-        _callbacks.Clear();
-        while (_pendingQueue.TryDequeue(out _)) { }
-    }
-
-    private void ScheduleRestart()
-    {
-        if (_restartScheduled || _shutdownRequested) return;
-        _restartScheduled = true;
-
-        var attempt = ++_restartCount;
-        if (attempt > Config.MaxRestarts)
-        {
-            Console.WriteLine($"[BunWorker:{Name}] Restart limit ({Config.MaxRestarts}) reached");
-            _restartScheduled = false;
-            return;
-        }
-
-        var delayMs = (int)Math.Min(Config.BaseBackoffMs * Math.Pow(2, attempt - 1), 30_000);
-        Console.WriteLine($"[BunWorker:{Name}] Restarting in {delayMs}ms (attempt {attempt}/{Config.MaxRestarts})");
-
-        Task.Run(async () =>
-        {
-            await Task.Delay(delayMs);
-            _restartScheduled = false;
-            _process?.Dispose();
-
-            if (Start(_workerHostPath!, _appRoot!, _compiledExe))
-            {
-                _restartCount = 0;
-                OnRestart?.Invoke(attempt);
-            }
-            else
-            {
-                ScheduleRestart();
-            }
-        });
     }
 
     // ── Send ──────────────────────────────────────────────────────────
 
-    public void Send(string jsonLine)
-    {
-        if (_ready && _process != null)
-            _process.Send(jsonLine);
-        else
-            _pendingQueue.Enqueue(jsonLine);
-    }
+    public void Send(string jsonLine) => _bridge?.Send(jsonLine);
 
     public void Send(int id, string jsonLine, Action<string> onResponse)
-    {
-        _callbacks[id] = onResponse;
-        Send(jsonLine);
-    }
+        => _bridge?.Send(id, jsonLine, onResponse);
 
-    public int NextId() => Interlocked.Increment(ref _nextId);
+    public int NextId() => _bridge?.NextId() ?? 0;
 
     public Task<string?> Query(string service, object? args = null)
-    {
-        var tcs = new TaskCompletionSource<string?>();
-        var id = NextId();
-        Send(id, JsonSerializer.Serialize(new { id, type = "query", service, args }), json =>
-        {
-            using var doc = JsonDocument.Parse(json);
-            var result = doc.RootElement.TryGetProperty("result", out var r) ? r.GetRawText() : null;
-            tcs.TrySetResult(result);
-        });
-        return tcs.Task;
-    }
+        => _bridge?.Query(service, args) ?? Task.FromResult<string?>(null);
 
-    public void Push(string channel, object data)
-    {
-        if (!_ready) return;
-        _process?.Send(JsonSerializer.Serialize(new { id = 0, type = "push", channel, data }));
-    }
+    public void Push(string channel, object data) => _bridge?.Push(channel, data);
+
+    public void HandleAction(string action) => _bridge?.HandleAction(action);
 
     public void Stop()
     {
-        _shutdownRequested = true;
         _process?.Stop();
         Detach();
     }
 
     public void Dispose() => Stop();
-
-    // ── Response dispatch ─────────────────────────────────────────────
-
-    private void OnStdoutLine(string line)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("type", out var typeProp))
-            {
-                var typeStr = typeProp.GetString();
-
-                if (typeStr == "service_push")
-                {
-                    var channel = root.GetProperty("channel").GetString()!;
-                    var data = root.GetProperty("data").GetRawText();
-                    OnServicePush?.Invoke(channel, data);
-                    return;
-                }
-
-                if (typeStr == "relay")
-                {
-                    var target = root.GetProperty("target").GetString()!;
-                    var channel = root.GetProperty("channel").GetString()!;
-                    var data = root.GetProperty("data").GetRawText();
-                    BunWorkerManager.Instance.Route(Name, target, channel, data);
-                    return;
-                }
-            }
-
-            if (root.TryGetProperty("error", out _))
-            {
-                var id = root.TryGetProperty("id", out var eid) ? eid.GetInt32() : 0;
-                if (_callbacks.TryRemove(id, out var errCb))
-                    errCb(line);
-                return;
-            }
-
-            if (root.TryGetProperty("id", out var idProp))
-            {
-                var id = idProp.GetInt32();
-                if (_callbacks.TryRemove(id, out var cb))
-                    cb(line);
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[BunWorker:{Name}] Parse error: {ex.Message}");
-        }
-    }
 }

@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // KeystoneConfig — app manifest loaded from keystone.config.json (or keystone.json).
 // Runtime reads everything except the "build" section (build-time only, absorbed by JsonExtensionData).
 
@@ -40,6 +45,28 @@ public class KeystoneConfig
 
     [JsonPropertyName("processRecovery")]
     public ProcessRecoveryConfig ProcessRecovery { get; set; } = new();
+
+    /// <summary>
+    /// When true, WebViews load content via a custom URL scheme instead of http://127.0.0.1.
+    /// Provides stable origin for service workers, app-level request interception, and custom resource routing.
+    /// The scheme name defaults to a sanitized version of <see cref="Id"/> (dots → hyphens).
+    /// Override with <see cref="SchemeName"/> for a custom scheme name.
+    /// </summary>
+    [JsonPropertyName("customScheme")]
+    public bool CustomScheme { get; set; } = false;
+
+    /// <summary>
+    /// Custom URL scheme name override. When null, derived from <see cref="Id"/>
+    /// by lowercasing and replacing dots with hyphens (e.g. "com.myapp.desktop" → "com-myapp-desktop").
+    /// Must be lowercase alphanumeric + hyphens only.
+    /// </summary>
+    [JsonPropertyName("schemeName")]
+    public string? SchemeName { get; set; }
+
+    /// <summary>Resolved scheme name: explicit SchemeName → sanitized Id.</summary>
+    [JsonIgnore]
+    public string ResolvedSchemeName =>
+        SchemeName ?? Id.ToLowerInvariant().Replace('.', '-');
 
     [JsonPropertyName("security")]
     public SecurityConfig Security { get; set; } = new();
@@ -439,6 +466,14 @@ public class WindowConfig
 
     [JsonPropertyName("resizable")]
     public bool Resizable { get; set; } = true;
+
+    /// <summary>
+    /// Load an external URL instead of a Bun-served web component.
+    /// Supports {bunPort} placeholder for dynamic port substitution.
+    /// The window still gets __KEYSTONE_PORT__ injection and bridge support.
+    /// </summary>
+    [JsonPropertyName("externalUrl")]
+    public string? ExternalUrl { get; set; }
 }
 
 public class ToolbarConfig

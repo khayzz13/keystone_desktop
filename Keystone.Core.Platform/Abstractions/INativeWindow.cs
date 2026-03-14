@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 namespace Keystone.Core.Platform;
 
 public interface INativeWindow : IDisposable
@@ -36,6 +41,7 @@ public interface INativeWindow : IDisposable
     void SetIgnoreMouseEvents(bool ignore);
     void SetResizable(bool resizable);
     void SetParent(INativeWindow? parent);
+    object? GetContentView();
 }
 
 public interface INativeWindowDelegate

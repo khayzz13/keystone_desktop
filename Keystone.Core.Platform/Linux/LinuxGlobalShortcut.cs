@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // LinuxGlobalShortcut — stub implementation.
 // X11 XGrabKey works on X11 sessions but is not viable under Wayland (the dominant
 // session type on modern Linux). A proper Wayland implementation requires the

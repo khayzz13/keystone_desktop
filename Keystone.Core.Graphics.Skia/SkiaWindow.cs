@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // SkiaWindow - Shared Metal device holder + WindowGpuContext factory
 // The device is thread-safe (shared). Each window creates its own GpuContext.
 

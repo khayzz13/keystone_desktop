@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using System.Diagnostics;
 using Keystone.Core.Management;
 using Keystone.Core.Management.Bun;
@@ -83,6 +88,8 @@ public class ActionRouter
                 ?? Path.Combine(Path.GetTempPath(), "keystone.log");
             Process.Start(new ProcessStartInfo(logPath) { UseShellExecute = true });
         }
+        else if (action == "dev_inspector")
+            _windowManager.GetAllWindows().FirstOrDefault(w => w.IsFocused)?.SetWebViewInspectable(true);
         else if (action == "bring_all_front")
             _windowManager.BringAllWindowsToFront();
         else if (action.StartsWith("run_tool:"))

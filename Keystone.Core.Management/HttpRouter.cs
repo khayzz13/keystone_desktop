@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // HttpRouter — C# HTTP-style route handlers over the existing invoke() bridge.
 //
 // The big idea
@@ -184,8 +189,9 @@ public class HttpRouter : IHttpRouter
     /// Called by ManagedWindow when it receives an invoke("http:request", ...) message.
     /// Matches the request against registered routes, runs the handler, and returns
     /// a response object that ManagedWindow sends back via the standard invoke reply.
+    /// Stream chunks are pushed to the per-window ctrl channel.
     /// </summary>
-    public async Task<object?> DispatchAsync(JsonElement args, string windowId, string replyChannel)
+    public async Task<object?> DispatchAsync(JsonElement args, string windowId)
     {
         var method = args.TryGetProperty("method", out var m) ? m.GetString() ?? "GET" : "GET";
         var path   = args.TryGetProperty("path",   out var p) ? p.GetString() ?? "/" : "/";
@@ -226,9 +232,9 @@ public class HttpRouter : IHttpRouter
 
                 if (response.IsStream && response.StreamWriter != null)
                 {
-                    // Streaming: respond immediately with stream metadata, then push chunks
-                    // to a dedicated channel. The bridge assembles them into a ReadableStream.
-                    var streamChannel = $"{replyChannel}:stream";
+                    // Streaming: push chunks to the per-window ctrl channel
+                    var ctrlChannel = $"window:{windowId}:__ctrl__";
+                    var streamChannel = $"__http_stream__:{windowId}:{path}:{DateTime.UtcNow.Ticks}";
                     _ = Task.Run(async () =>
                     {
                         try
@@ -249,10 +255,10 @@ public class HttpRouter : IHttpRouter
             catch (Exception ex)
             {
                 Console.WriteLine($"[HttpRouter] Handler error {method} {path}: {ex.Message}");
-                return new { status = 500, contentType = "application/json", body = new { error = ex.Message } };
+                return new { status = 500, contentType = "application/json", body = new { error = new { code = "handler_error", message = ex.Message } } };
             }
         }
 
-        return new { status = 404, contentType = "application/json", body = new { error = $"No route: {method} {path}" } };
+        return new { status = 404, contentType = "application/json", body = new { error = new { code = "handler_not_found", message = $"No route: {method} {path}" } } };
     }
 }

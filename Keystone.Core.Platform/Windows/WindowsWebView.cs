@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // WindowsWebView — WebView2 implementation of IWebView.
 // WebView2 init is async; InitializeAsync() must be awaited before use.
 // WindowsNativeWindow.CreateWebView spins a Task, awaits init, then fires the callback.
@@ -96,6 +101,20 @@ public class WindowsWebView : IWebView
     {
         if (_webView == null) return;
         _ = _webView.ExecuteScriptAsync(js);
+    }
+
+    public void EvaluateJavaScript(string js, Action<string?> completion)
+    {
+        if (_webView == null) { completion(null); return; }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await _webView.ExecuteScriptAsync(js);
+                completion(result);
+            }
+            catch { completion(null); }
+        });
     }
 
     public void EvaluateJavaScriptBool(string js, Action<bool> completion)

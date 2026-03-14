@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -589,13 +594,17 @@ public class WindowManager : IDisposable
         var data = KeystoneDb.LoadWorkspace(id);
         if (data == null) return;
 
-        var toClose = _windowsById.Keys.ToList();
+        var toClose = _windowsById.Where(kv => !kv.Value.GetPlugin().ExcludeFromWorkspace)
+            .Select(kv => kv.Key).ToList();
         foreach (var wid in toClose) CloseWindow(wid);
 
-        // Spawn standalone windows
+        // Spawn standalone windows (skip types that are excluded from workspace — stale snapshot entries)
         var spawnedByType = new Dictionary<string, List<string>>(); // windowType -> [windowId]
         foreach (var snap in data.Value.Windows)
         {
+            var registered = _registry?.GetWindow(snap.WindowType);
+            if (registered != null && registered.ExcludeFromWorkspace) continue;
+
             var result = OnSpawnWindowAt?.Invoke(snap.WindowType);
             if (result == null) continue;
             result.Value.nativeWindow.SetFrame(snap.X, snap.Y, snap.Width, snap.Height);

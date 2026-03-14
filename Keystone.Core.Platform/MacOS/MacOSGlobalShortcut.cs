@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // MacOSGlobalShortcut — global hotkey registration via NSEvent.addGlobalMonitorForEvents.
 // No entitlements required (unlike CGEventTap which needs Accessibility).
 // Uses addLocalMonitorForEvents for when the app is focused, addGlobalMonitorForEvents for background.

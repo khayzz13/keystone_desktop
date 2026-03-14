@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // INetworkDeclarer — optional interface for plugins that need network access beyond the app allow-list.
 // Implement on IServicePlugin, ICorePlugin, or any plugin interface.
 // Declared endpoints are merged into NetworkPolicy during plugin loading.

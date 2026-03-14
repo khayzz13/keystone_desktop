@@ -1,20 +1,97 @@
 # SDK Reference
 
-> Last updated: 2026-03-03
+> Last updated: 2026-03-07
 
 The `@keystone/sdk/bridge` module is the client-side bridge between your web components (running in WKWebView) and the C# + Bun host process. It gives you typed access to native OS APIs, pub/sub channels, service queries, and lifecycle hooks.
 
 ```typescript
-import { keystone, invoke, subscribe, app, nativeWindow, /* ... */ } from "@keystone/sdk/bridge";
+import { ipc, app, nativeWindow, dialog, /* ... */ } from "@keystone/sdk/bridge";
 ```
 
 ---
 
-## Core Primitives
+## Unified IPC Facade (`ipc`)
+
+The `ipc` export is the primary API for all cross-process communication. It organizes calls by which process you're targeting:
+
+```typescript
+import { ipc } from "@keystone/sdk/bridge";
+
+// C# host — direct postMessage, fastest path
+await ipc.host.call<string>("app:getVersion");
+ipc.host.action("app:quit");
+
+// Bun services — via WebSocket
+const notes = await ipc.bun.call<Note[]>("notes:getAll");
+const weather = await ipc.bun.query("weather", { city: "SF" });
+
+// Channel pub/sub
+const unsub = ipc.subscribe("metrics:cpu", (data) => { ... });
+ipc.publish("chat:message", { text: "Hello" });
+```
+
+### `ipc.host.call<T>(channel, args?, options?): Promise<T>`
+
+Invoke a C# handler by channel name. Direct postMessage to WKWebView — no Bun round-trip. Timeout: 15 seconds. Supports `AbortSignal` for cancellation.
+
+### `ipc.host.action(action): void`
+
+Dispatch an action string to the C# host and all connected Bun services. Fire-and-forget.
+
+### `ipc.bun.call<T>(channel, args?, options?): Promise<T>`
+
+Invoke a Bun service handler by channel name. Goes over WebSocket. Timeout: 15 seconds. Supports `AbortSignal` for cancellation.
+
+```typescript
+// Bun side
+defineService("notes").handle("notes:getAll", async (_, svc) => svc.store.get("notes"));
+
+// Browser side
+const notes = await ipc.bun.call<Note[]>("notes:getAll");
+```
+
+### `ipc.bun.query<T>(service, args?): Promise<T>`
+
+Query a Bun service's `.query()` handler. Returns a promise with the result. Timeout: 10 seconds.
+
+### `ipc.subscribe(channel, callback): () => void`
+
+Subscribe to a named data channel pushed from C# or Bun. The last received value is replayed immediately to new subscribers. Returns an unsubscribe function.
+
+### `ipc.publish(channel, data?): void`
+
+Broadcast data to a channel. All subscribers (any window) receive it immediately.
+
+### `ipc.host.call` vs `ipc.bun.call`
+
+| | `ipc.host.call` | `ipc.bun.call` |
+|---|---|---|
+| Target | C# `RegisterInvokeHandler` | Bun `defineService().handle()` |
+| Transport | Direct postMessage → WKWebView | WebSocket |
+| Round-trip | Zero Bun hops | One Bun hop |
+| Requires WKWebView | Yes | No |
+| Use for | Native OS APIs, window control | Business logic, data access |
+
+### Legacy Aliases
+
+The individual function exports remain for backward compatibility:
+
+```typescript
+import { invoke, invokeBun, query, subscribe, action, publish } from "@keystone/sdk/bridge";
+```
+
+| Legacy | Equivalent |
+|--------|-----------|
+| `invoke(ch, args)` | `ipc.host.call(ch, args)` |
+| `invokeBun(ch, args)` | `ipc.bun.call(ch, args)` |
+| `query(svc, args)` | `ipc.bun.query(svc, args)` |
+| `subscribe(ch, cb)` | `ipc.subscribe(ch, cb)` |
+| `action(a)` | `ipc.host.action(a)` |
+| `publish(ch, data)` | `ipc.publish(ch, data)` |
 
 ### `keystone(): KeystoneClient`
 
-Returns the singleton bridge client. Auto-connects to the Bun WebSocket on first call. All namespace helpers (`app`, `clipboard`, etc.) call this internally.
+Returns the singleton bridge client. Auto-connects to the Bun WebSocket on first call. All namespace helpers (`app`, `clipboard`, etc.) call this internally. The `ipc` export is generally preferred over calling `keystone()` directly.
 
 ```typescript
 const ks = keystone();
@@ -22,59 +99,6 @@ ks.connected; // boolean — whether WebSocket is live
 ks.windowId;  // string — ID of the native window this component belongs to
 ks.port;      // number — Bun HTTP server port
 ```
-
-### `invoke<T>(channel, args?): Promise<T>`
-
-Invoke a C# handler by channel name. Direct postMessage to WKWebView — no Bun round-trip. Timeout: 15 seconds.
-
-```typescript
-const result = await invoke<string>('app:getVersion');
-const ok = await invoke<boolean>('clipboard:hasText');
-```
-
-### `invokeBun<T>(channel, args?): Promise<T>`
-
-Invoke a Bun service handler by channel name. Goes over WebSocket. Timeout: 15 seconds.
-
-```typescript
-// Bun side
-defineService("notes").handle("notes:getAll", async (_, svc) => svc.store.get("notes"));
-
-// Browser side
-const notes = await invokeBun<Note[]>("notes:getAll");
-```
-
-### `subscribe(channel, callback): () => void`
-
-Subscribe to a named data channel pushed from C# or Bun. The last received value is replayed immediately to new subscribers. Returns an unsubscribe function.
-
-```typescript
-const unsub = subscribe('myChannel', (data) => console.log(data));
-unsub();
-```
-
-### `action(name): void`
-
-Dispatch an action string to the C# host and all connected Bun services. Fire-and-forget.
-
-```typescript
-action('app:quit');
-action('window:minimize');
-```
-
-### `query(service, args?): Promise<any>`
-
-Query a Bun service. Returns a promise with the result. Timeout: 10 seconds.
-
-### `invoke` vs `invokeBun`
-
-| | `invoke` | `invokeBun` |
-|---|---|---|
-| Target | C# `RegisterInvokeHandler` | Bun `defineService().handle()` |
-| Transport | Direct postMessage → WKWebView | WebSocket |
-| Round-trip | Zero Bun hops | One Bun hop |
-| Requires WKWebView | Yes | No |
-| Use for | Native OS APIs, window control | Business logic, data access |
 
 ---
 
@@ -294,6 +318,72 @@ Make the window transparent to mouse events (click-through). Useful for overlay 
 #### `nativeWindow.hide(): Promise<void>`
 #### `nativeWindow.show(): Promise<void>`
 
+### DevTools
+
+#### `nativeWindow.setInspectable(enabled): Promise<void>`
+
+Enable Safari Web Inspector for this window's WebView. Once enabled, the WebView appears under Safari > Develop menu.
+
+```typescript
+await nativeWindow.setInspectable(true);
+```
+
+Auto-enabled at startup when the `KEYSTONE_INSPECTABLE=1` environment variable is set. Also available via the Window > Web Inspector menu item (Cmd+Alt+I).
+
+### Context Menu
+
+The default browser context menu is suppressed on all windows. Apps control what appears on right-click.
+
+#### `nativeWindow.onContextMenu(callback): () => void`
+
+Subscribe to right-click events. Returns an unsubscribe function.
+
+```typescript
+type ContextMenuInfo = {
+  linkUrl: string | null;
+  imageUrl: string | null;
+  selectedText: string | null;
+  isEditable: boolean;
+  x: number; y: number;
+};
+```
+
+Two approaches:
+
+**Custom HTML menu** (Discord-style) — render your own menu component at the click coordinates:
+
+```typescript
+nativeWindow.onContextMenu(info => {
+  showMyCustomMenu(info.x, info.y, info);
+});
+```
+
+**Native OS menu** (VS Code-style) — pop a platform context menu:
+
+```typescript
+nativeWindow.onContextMenu(info => {
+  nativeWindow.showContextMenu([
+    { label: 'Copy', action: 'copy' },
+    'separator',
+    { label: 'Select All', action: 'select-all' },
+  ], { x: info.x, y: info.y });
+});
+```
+
+#### `nativeWindow.showContextMenu(items, position): Promise<void>`
+
+Show a native OS context menu (NSMenu on macOS). Each item's `action` string routes through the action system. Use `'separator'` for divider lines.
+
+```typescript
+await nativeWindow.showContextMenu([
+  { label: 'Cut', action: 'edit:cut' },
+  { label: 'Copy', action: 'edit:copy' },
+  { label: 'Paste', action: 'edit:paste' },
+  'separator',
+  { label: 'Delete', action: 'edit:delete' },
+], { x: 100, y: 200 });
+```
+
 ### Window Events
 
 #### `nativeWindow.on(event, callback): () => void`
@@ -339,13 +429,400 @@ Current platform identifier. Read-only.
 
 Check if a capability is available on the current platform.
 
-Available features: `fullscreen`, `opacity`, `minMaxSize`, `aspectRatio`, `contentProtection`, `clickThrough`, `singleInstance`, `protocolHandler`, `openFile`, `openUrl`, `parentChild`
+Available features: `fullscreen`, `opacity`, `minMaxSize`, `aspectRatio`, `contentProtection`, `clickThrough`, `singleInstance`, `protocolHandler`, `openFile`, `openUrl`, `parentChild`, `customScheme`, `navigationPolicy`, `requestInterception`, `diagnostics`, `crashReporting`, `webWorker`
 
 ```typescript
 if (platform.isSupported('contentProtection')) {
   await nativeWindow.setContentProtection(true);
 }
 ```
+
+### Browser Service Worker Management
+
+These methods control the browser-native `navigator.serviceWorker` API — useful for managing offline caching and Cache Storage. They live under `platform` because they're platform-level maintenance operations.
+
+#### `platform.swStatus(): Promise<ServiceWorkerStatus>`
+
+Get the browser service worker registration status for this window's origin.
+
+```typescript
+type ServiceWorkerStatus = {
+  active: boolean;
+  waiting: boolean;
+  installing: boolean;
+  scope: string | null;
+  scriptURL: string | null;
+};
+
+const sw = await platform.swStatus();
+if (sw.active) console.log(`SW active: ${sw.scriptURL}`);
+```
+
+**Requires `customScheme: true`** for service workers to persist across restarts. Without it, the origin is `http://127.0.0.1:{random_port}` — different every launch, orphaning registrations.
+
+#### `platform.swUnregister(): Promise<void>`
+
+Unregister all browser service worker registrations for this origin.
+
+#### `platform.swClearCaches(): Promise<void>`
+
+Delete all Cache Storage entries for this origin.
+
+```typescript
+// Typical cache-bust flow
+const sw = await platform.swStatus();
+if (sw.active) {
+  await platform.swClearCaches();
+  await platform.swUnregister();
+  location.reload();
+}
+```
+
+---
+
+## `webWorker`
+
+```typescript
+import { webWorker, WebWorker, workerSelf } from "@keystone/sdk/bridge";
+```
+
+Headless window workers with structured `postMessage`/`onMessage` communication. Unlike raw headless windows, web workers provide bidirectional messaging via WebSocket pub/sub (no C# round-trip for messages) and `evaluate()` with return values.
+
+### `webWorker.spawn(component): Promise<WebWorker>`
+
+Spawn a worker running the given component in a headless window. Returns a `WebWorker` instance.
+
+```typescript
+const worker = await webWorker.spawn('my-worker-component');
+```
+
+### `webWorker.list(): Promise<string[]>`
+
+Returns IDs of all active web workers.
+
+### `WebWorker` class
+
+```typescript
+class WebWorker {
+  readonly id: string;
+  readonly component: string;
+  postMessage(data: any): void;
+  onMessage(callback: (data: any) => void): () => void;
+  evaluate<T = any>(js: string): Promise<T>;
+  terminate(): Promise<void>;
+}
+```
+
+#### `worker.postMessage(data): void`
+
+Send structured data to the worker. Published to `worker:{id}:in` channel.
+
+#### `worker.onMessage(callback): () => void`
+
+Subscribe to messages from the worker. Returns an unsubscribe function.
+
+#### `worker.evaluate(js): Promise<T>`
+
+Evaluate JavaScript in the worker's WebView and return the result. Unlike `headless.evaluate()`, this returns a value.
+
+```typescript
+const title = await worker.evaluate('document.title');
+const result = await worker.evaluate('computeExpensiveThing()');
+```
+
+#### `worker.terminate(): Promise<void>`
+
+Terminate the worker. Cleans up subscriptions and closes the headless window.
+
+### `workerSelf`
+
+For use inside the worker component — provides the worker's side of the message channel.
+
+```typescript
+import { workerSelf } from "@keystone/sdk/bridge";
+
+workerSelf.onMessage((data) => {
+  const result = processData(data);
+  workerSelf.postMessage(result);
+});
+```
+
+#### `workerSelf.postMessage(data): void`
+
+Send a message to the parent that spawned this worker.
+
+#### `workerSelf.onMessage(callback): () => void`
+
+Subscribe to messages from the parent. Returns an unsubscribe function.
+
+### Example
+
+```typescript
+// Parent component
+import { webWorker } from "@keystone/sdk/bridge";
+
+const worker = await webWorker.spawn('data-processor');
+
+worker.onMessage((result) => {
+  console.log('Processed:', result);
+});
+
+worker.postMessage({ type: 'process', data: largeDataSet });
+
+// Later
+await worker.terminate();
+```
+
+```typescript
+// Worker component (data-processor)
+import { workerSelf } from "@keystone/sdk/bridge";
+
+export function mount(root: HTMLElement) {
+  workerSelf.onMessage((msg) => {
+    if (msg.type === 'process') {
+      const result = heavyComputation(msg.data);
+      workerSelf.postMessage(result);
+    }
+  });
+}
+```
+
+### Communication Architecture
+
+Messages flow through WebSocket pub/sub — C# is only involved for lifecycle operations.
+
+| Operation | Transport | C# involved? |
+|---|---|---|
+| `postMessage` (either direction) | WebSocket pub/sub | No |
+| `spawn` | C# invoke | Yes |
+| `evaluate` | C# invoke | Yes |
+| `terminate` | C# invoke | Yes |
+| `list` | C# invoke | Yes |
+
+Channels: `worker:{id}:in` (parent → worker), `worker:{id}:out` (worker → parent).
+
+---
+
+## `diagnostics`
+
+```typescript
+import { diagnostics } from "@keystone/sdk/bridge";
+```
+
+Unified crash/event telemetry and process health monitoring. All crash sources — C# unhandled exceptions, unobserved `Task` faults, Bun subprocess crashes, WebKit content process terminations, and render thread exceptions — funnel through a single pipeline. Crash events are both kept in memory (last 100) and written to disk as structured JSON artifacts.
+
+### Crash Event Types
+
+| `kind` | Source | When |
+|--------|--------|------|
+| `unhandled_exception` | `AppDomain.UnhandledException` | An exception propagates out of all user code |
+| `unobserved_task` | `TaskScheduler.UnobservedTaskException` | A faulted `Task` is garbage collected without observation |
+| `bun_crash` | Bun subprocess exits | Bun process terminates unexpectedly. `extra.exitCode` available |
+| `webview_crash` | `WKNavigationDelegate.ContentProcessDidTerminate` | WebKit content process OOM or watchdog kill. `extra.windowId` available |
+| `render_exception` | `WindowRenderThread` catch block | Uncaught exception during Skia/Metal render. `extra.windowId` available |
+
+```typescript
+type CrashEvent = {
+  kind: string;
+  timestamp: string;       // ISO 8601 UTC
+  message: string | null;  // Exception.Message (null for process crashes)
+  stackTrace: string | null;
+  processId: number;       // C# host PID
+  extra: Record<string, string> | null; // kind-specific metadata
+};
+```
+
+### `diagnostics.getCrashes(): Promise<CrashEvent[]>`
+
+Returns recent crash events (last 100, kept in C# memory). Crash JSON artifacts are also written to `~/.keystone/crashes/` with filenames like `crash-20260303-142159-bun_crash.json`. Old artifacts are pruned to the last 50 on each write.
+
+```typescript
+const crashes = await diagnostics.getCrashes();
+crashes.forEach(c => console.log(`[${c.kind}] ${c.message} @ ${c.timestamp}`));
+```
+
+### `diagnostics.onCrash(callback): () => void`
+
+Subscribe to crash events in real-time via WebSocket push. Fires the moment a crash is reported — before the artifact is written to disk. Returns an unsubscribe function.
+
+```typescript
+const unsub = diagnostics.onCrash(event => {
+  console.error(`[${event.kind}] ${event.message}`);
+  if (event.extra?.windowId) console.error(`  Window: ${event.extra.windowId}`);
+  if (event.stackTrace) console.error(event.stackTrace);
+});
+```
+
+### `diagnostics.health(): Promise<HealthSummary>`
+
+Returns a point-in-time health snapshot of the running C# host process. Memory is the physical footprint (RSS), not managed heap.
+
+```typescript
+const h = await diagnostics.health();
+console.log(`Uptime: ${h.uptimeMs}ms, Memory: ${(h.memoryBytes / 1e6).toFixed(1)}MB`);
+```
+
+```typescript
+type HealthSummary = {
+  uptimeMs: number;       // Milliseconds since ApplicationRuntime.Initialize()
+  memoryBytes: number;    // Physical memory footprint (phys_footprint on macOS)
+  bunRunning: boolean;    // Whether the Bun subprocess is alive
+  windowCount: number;    // Number of active ManagedWindows
+  recentCrashes: number;  // CrashReporter.Recent.Count
+};
+```
+
+### C# Integration
+
+On the C# side, `CrashReporter` is a static class in `Keystone.Core`. Apps can subscribe to crashes directly:
+
+```csharp
+// Via ICoreContext (in your plugin)
+ctx.OnCrash += evt => Log.Error($"Crash: {evt.Kind} — {evt.Message}");
+
+// Or directly
+CrashReporter.OnCrash += evt => SendToTelemetry(evt);
+CrashReporter.Report("custom_error", ex, new() { ["context"] = "my-feature" });
+```
+
+---
+
+## `webview`
+
+```typescript
+import { webview } from "@keystone/sdk/bridge";
+```
+
+WebView-level navigation policy and request interception. Navigation policy works on all configurations (blocks in-page navigations like `<a href="...">` clicks). Request interception requires the custom URL scheme, since it operates on the `WKURLSchemeHandler` that mediates all `keystone://` resource loads.
+
+### `webview.setNavigationPolicy(blocked): Promise<void>`
+
+Block the WebView from navigating to URLs that contain any of the given substrings. Internal URLs (`keystone://` and `http://127.0.0.1`) are always allowed regardless of the policy. The policy applies to all navigation types — link clicks, `window.location` assignments, form submissions, etc.
+
+```typescript
+// Block navigation to external sites
+await webview.setNavigationPolicy(['facebook.com', 'tracking.net', 'ads.']);
+
+// Allow everything (clear the blocklist)
+await webview.setNavigationPolicy([]);
+```
+
+Implemented via `WKNavigationDelegate.DecidePolicy` — returning `WKNavigationActionPolicy.Cancel` for blocked URLs. This only prevents navigation; it does not block subresource loads (scripts, images, etc.) — use request interception for that.
+
+### `webview.setRequestInterceptor(rules): Promise<void>`
+
+Set request interception rules on the `KeystoneSchemeHandler`. **Requires `customScheme: true`** — returns an error if the scheme handler isn't active. Rules are evaluated in order against the request URL; first match wins. Unmatched requests proxy to the Bun HTTP server as usual.
+
+```typescript
+type RequestInterceptRule = {
+  pattern: string;                          // URL substring to match
+  action: 'block' | 'redirect' | 'allow';  // What to do on match
+  target?: string;                          // Redirect destination (required for 'redirect')
+};
+```
+
+```typescript
+// Block analytics, redirect old API paths
+await webview.setRequestInterceptor([
+  { pattern: 'analytics.js', action: 'block' },
+  { pattern: 'tracker.min.js', action: 'block' },
+  { pattern: '/api/v1/', action: 'redirect', target: '/api/v2/' },
+  { pattern: '/legacy/', action: 'redirect', target: '/modern/' },
+]);
+
+// Clear all rules (everything proxies to Bun normally)
+await webview.setRequestInterceptor([]);
+```
+
+| Action | Behavior |
+|--------|----------|
+| `block` | Returns HTTP 403 with body "Blocked by request interceptor" |
+| `redirect` | Returns HTTP 302 with `Location` header set to `target` |
+| `allow` | Explicitly passes through (useful for whitelisting specific URLs before broader rules) |
+
+**How it works under the hood:** The `KeystoneSchemeHandler` (C#) intercepts every `{schemeName}://app/*` request via `IWKUrlSchemeHandler.StartUrlSchemeTask`. Before proxying to Bun, it checks the `OnIntercept` callback. Rules set via this API configure that callback to match URL substrings and return the appropriate `SchemeResponse` (403, 302, or passthrough). Unmatched requests are forwarded to `http://127.0.0.1:{bunPort}/{path}` via `HttpClient`.
+
+### C# Integration
+
+For more complex interception logic (custom response bodies, authentication injection, content rewriting), use the scheme handler's `OnIntercept` hook directly in C#:
+
+```csharp
+// In your plugin's Initialize():
+#if MACOS
+if (ctx is ApplicationRuntime runtime)
+{
+    // Access the scheme handler's OnIntercept for full control
+    // Return a SchemeResponse to override, or null to proxy to Bun
+    schemeHandler.OnIntercept = (url, method) =>
+    {
+        if (url.Contains("/admin/") && !IsAuthenticated())
+            return SchemeResponse.Redirect($"{_schemeHandler.Origin}/login");
+        if (url.EndsWith(".map"))
+            return SchemeResponse.Blocked(); // no source maps in production
+        return null; // proxy to Bun
+    };
+}
+#endif
+```
+
+`SchemeResponse` helpers:
+
+| Factory | Response |
+|---------|----------|
+| `SchemeResponse.Html(html, statusCode?)` | HTML body, `text/html` |
+| `SchemeResponse.Json(json, statusCode?)` | JSON body, `application/json` |
+| `SchemeResponse.Redirect(url)` | 302 with `Location` header |
+| `SchemeResponse.Blocked()` | 403 "Blocked by request interceptor" |
+
+---
+
+## Custom URL Scheme
+
+Set `customScheme: true` in `keystone.config.json` to serve web content via a custom URL scheme instead of `http://127.0.0.1:{port}/`. This registers a `WKURLSchemeHandler` (macOS) that intercepts all requests for the app's scheme.
+
+The scheme name defaults to a sanitized version of the app's `id` field (dots → hyphens). For example, `"id": "com.myapp.desktop"` produces the origin `com-myapp-desktop://app`. You can override it with the `schemeName` field.
+
+```json
+{
+  "id": "com.myapp.desktop",
+  "customScheme": true,
+  "schemeName": "myapp"
+}
+```
+
+With the above config, the origin is `myapp://app`. If `schemeName` is omitted, it would be `com-myapp-desktop://app`.
+
+### What it enables
+
+| Capability | Without custom scheme | With custom scheme |
+|---|---|---|
+| **Origin** | `http://127.0.0.1:{random_port}` — changes every launch | `{schemeName}://app` — stable across restarts |
+| **Service workers** | Orphaned on restart (origin changed) | Persist across restarts |
+| **Cache Storage** | Lost on restart | Persists |
+| **Request interception** | Not available | All resource loads flow through C# |
+| **Navigation policy** | Available | Available |
+| **Origin isolation** | Shared port — any local process can access | Only accessible inside the WKWebView |
+
+### How requests flow
+
+```
+Browser requests {schemeName}://app/dashboard.js
+  → WKURLSchemeHandler.StartUrlSchemeTask(task)
+    → Check OnIntercept callback
+      → If intercepted: respond with SchemeResponse (block/redirect/custom)
+      → If not intercepted: proxy to http://127.0.0.1:{bunPort}/dashboard.js via HttpClient
+    → task.DidReceiveResponse(NSHttpUrlResponse)
+    → task.DidReceiveData(NSData)
+    → task.DidFinish()
+```
+
+### WebSocket connections
+
+WebSocket connections are unaffected by the custom scheme. They continue using absolute URLs (`ws://127.0.0.1:{port}/ws`), which work regardless of the page origin. WebSocket is not subject to CORS, and Bun's server accepts connections from any origin.
+
+### MIME type resolution
+
+The scheme handler resolves MIME types from the proxied response's `Content-Type` header. If missing, it falls back to extension-based guessing: `.html` → `text/html`, `.js`/`.mjs` → `application/javascript`, `.css` → `text/css`, `.wasm` → `application/wasm`, etc.
 
 ---
 
@@ -684,7 +1161,7 @@ keystone().onThemeChange((theme) => {
 
 ## Low-level Bridge API
 
-Directly on the `KeystoneClient` instance:
+The `keystone()` singleton provides low-level access. Prefer `ipc` for cross-process calls.
 
 ```typescript
 const ks = keystone();
@@ -692,10 +1169,10 @@ const ks = keystone();
 
 | Method | Description |
 |--------|-------------|
-| `ks.invoke<T>(channel, args?)` | Raw invoke call — namespace helpers wrap this |
-| `ks.action(action)` | Fire-and-forget action string |
-| `ks.subscribe(channel, cb)` | Subscribe to named WebSocket channel |
-| `ks.query(service, args?)` | Query a Bun service |
+| `ks.invoke<T>(channel, args?, options?)` | C# invoke — use `ipc.host.call()` instead |
+| `ks.action(action)` | Fire-and-forget action — use `ipc.host.action()` instead |
+| `ks.subscribe(channel, cb)` | Channel subscribe — use `ipc.subscribe()` instead |
+| `ks.query(service, args?)` | Bun service query — use `ipc.bun.query()` instead |
 | `ks.send(type, data?)` | Raw typed WebSocket message |
 | `ks.onConnect(cb)` | Fires on WebSocket connect (or immediately if already connected) |
 | `ks.onAction(cb)` | Fires when action dispatched to web layer from C# |

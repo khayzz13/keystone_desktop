@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { keystone } from "@keystone/sdk/bridge";

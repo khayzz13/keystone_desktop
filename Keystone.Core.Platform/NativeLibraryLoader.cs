@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -32,7 +37,7 @@ public static class NativeLibraryLoader
 
     /// <summary>
     /// Add a directory to search for native dylibs. Searched in order after the executable directory.
-    /// Use for app-specific native libraries (e.g. a Go strategy engine dylib).
+    /// Use for app-specific native libraries (e.g. a native plugin dylib).
     /// </summary>
     public static void AddSearchPath(string path)
     {

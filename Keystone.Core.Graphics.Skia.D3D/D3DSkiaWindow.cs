@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Kaedyn Limon. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 // D3DSkiaWindow — Shared D3D12 device holder + D3DGpuContext factory.
 // Equivalent of SkiaWindow.cs (Metal) and VulkanSkiaWindow.cs (Vulkan).
 // The ID3D12Device is thread-safe (shared). Each window has its own D3DGpuContext.
